@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>Rondje<span>.</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v6</span></div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v7</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -170,7 +170,7 @@
 /* ---------- kaart ---------- */
 const map = L.map('map', {zoomControl:true}).setView([52.09, 5.12], 9);
 const base = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-  {maxZoom:19, attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'}).addTo(map);
+  {maxZoom:19, attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · routes: Valhalla (FOSSGIS)'}).addTo(map);
 const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
   {maxZoom:17, attribution:'© OpenStreetMap, SRTM | © OpenTopoMap'});
 L.control.layers({'Kaart':base, 'Topo (hoogtelijnen)':topo}).addTo(map);
@@ -258,30 +258,58 @@ function hav(a, b){
   const h = Math.sin(dLa/2)**2 + Math.cos(a[0]*r)*Math.cos(b[0]*r)*Math.sin(dLo/2)**2;
   return 2*R*Math.asin(Math.sqrt(h));
 }
-async function brouter(points, profile){
-  const lonlats = points.map(p => p[1].toFixed(6) + ',' + p[0].toFixed(6)).join('|');
-  const url = `https://brouter.de/brouter?lonlats=${lonlats}&profile=${profile}&alternativeidx=0&format=geojson`;
-  const r = await fetch(url);
-  const txt = await r.text();
-  if (!r.ok || txt[0] !== '{') throw new Error(txt.slice(0, 120) || ('HTTP ' + r.status));
-  return parseRoute(JSON.parse(txt), profile);
+const VALHALLA = 'https://valhalla1.openstreetmap.de';
+const V_UNPAVED = new Set(['compacted','dirt','gravel','path','impassable']);
+function decode6(str){
+  const out = []; let i = 0, lat = 0, lon = 0;
+  while (i < str.length){
+    for (const k of [0, 1]){
+      let res = 0, shift = 0, b;
+      do { b = str.charCodeAt(i++) - 63; res |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+      const d = (res & 1) ? ~(res >> 1) : (res >> 1);
+      if (k === 0) lat += d; else lon += d;
+    }
+    out.push([lat/1e6, lon/1e6]);
+  }
+  return out;
 }
-function parseRoute(j, profile){
-  const f = j.features[0], p = f.properties;
-  const coords = f.geometry.coordinates.map(c => [c[1], c[0], c[2] ?? null]);
-  // cumulatieve afstand per punt
+function costing(surface, elev){
+  return {pedestrian: {
+    use_tracks: surface === 'unpaved' ? 1 : surface === 'paved' ? 0 : 0.5,
+    walkway_factor: surface === 'unpaved' ? 0.6 : 1,
+    use_hills: elev === 'no' ? 0 : state.elevAmt === 'gt100' ? 1 : 0.5,
+    max_hiking_difficulty: 3}};
+}
+async function vpost(path, body){
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 15000);
+  try {
+    const r = await fetch(VALHALLA + path, {method:'POST', body: JSON.stringify(body), signal: ctl.signal});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    return j;
+  } finally { clearTimeout(timer); }
+}
+async function brouter(points, surface, elev){
+  const co = costing(surface, elev);
+  const locations = points.map((p, i) => ({lat: p[0], lon: p[1], type: (i === 0 || i === points.length-1) ? 'break' : 'through'}));
+  const j = await vpost('/route', {locations, costing:'pedestrian', costing_options: co, elevation_interval: 30, directions_type:'none'});
+  const coords = [];
+  for (const leg of j.trip.legs){
+    const pts = decode6(leg.shape), el = leg.elevation || [], iv = leg.elevation_interval || 30; let d = 0;
+    pts.forEach((p, i) => {
+      if (i) d += hav(pts[i-1], p);
+      coords.push([p[0], p[1], el.length ? el[Math.min(el.length-1, Math.round(d/iv))] : null]);
+    });
+  }
   const cum = [0];
   for (let i = 1; i < coords.length; i++) cum.push(cum[i-1] + hav(coords[i-1], coords[i]));
-  // ondergrond-secties uit messages
-  const msgs = p.messages || [], h = msgs[0] || [];
-  const iD = h.indexOf('Distance'), iT = h.indexOf('WayTags');
-  const secs = []; let acc = 0, unp = 0;
-  for (let k = 1; k < msgs.length; k++){
-    const d = +msgs[k][iD] || 0, u = isUnpaved(msgs[k][iT]);
-    acc += d; if (u) unp += d; secs.push({end:acc, u});
-  }
-  const total = +p['track-length'] || cum[cum.length-1];
-  // markeer elk segment als (on)verhard o.b.v. positie langs de route
+  // ondergrond per stuk weg ophalen
+  const secs = []; let acc = 0;
+  try {
+    const a = await vpost('/trace_attributes', {shape: coords.map(c => ({lat: c[0], lon: c[1]})), costing:'pedestrian', costing_options: co,
+      shape_match:'map_snap', filters:{attributes:['edge.surface','edge.length'], action:'include'}});
+    for (const e of a.edges || []){ acc += e.length*1000; secs.push({end: acc, u: V_UNPAVED.has(e.surface)}); }
+  } catch(e){ console.warn('Ondergrond onbekend:', e.message); }
   const scale = acc ? acc / cum[cum.length-1] : 1; let s = 0;
   const segU = [];
   for (let i = 1; i < coords.length; i++){
@@ -289,7 +317,7 @@ function parseRoute(j, profile){
     while (s < secs.length - 1 && secs[s].end < mid) s++;
     segU.push(secs.length ? secs[s].u : false);
   }
-  return finishRoute(trimSpurs(coords, segU), profile);
+  return finishRoute(trimSpurs(coords, segU), null);
 }
 // knip doodlopende heen-en-terug-stukjes weg
 function trimSpurs(coords, segU){
@@ -318,42 +346,6 @@ function finishRoute({coords, segU}, profile){
           profile, hasElev: coords.some(c => c[2] != null)};
 }
 
-/* eigen hardloopprofiel voor BRouter (valt terug op standaardprofielen als uploaden mislukt) */
-function runProfile(surface, elev){
-  const pen = {paved:[1.5,0], unpaved:[0,1.5], any:[0,0]}[surface];   // [straf onverhard, straf verhard]
-  return `---context:global
-assign validForFoot 1
-assign turncost 0
-assign initialcost 0
-assign downhillcost 0
-assign downhillcutoff 1.5
-assign uphillcost ${elev === 'no' ? 80 : 0}
-assign uphillcutoff 1.5
-
----context:way
-assign knownunpaved surface=unpaved|gravel|fine_gravel|dirt|ground|grass|sand|compacted|mud
-assign knownpaved surface=paved|asphalt|concrete|paving_stones|sett|cobblestone
-assign unpaved switch knownunpaved 1 switch knownpaved 0 switch highway=path|track|bridleway switch tracktype=grade1 0 1 0
-assign footok switch foot=no|private 0 switch foot=yes|designated|permissive 1 switch access=private|no 0 1
-assign hwcost switch highway=motorway|motorway_link|trunk|trunk_link 10000 switch highway=primary|primary_link 5 switch highway=secondary|secondary_link 3 switch highway=tertiary|tertiary_link 2 switch highway=residential|living_street|pedestrian|footway|cycleway|unclassified|service|road 1.2 switch highway=path|track|bridleway 1.1 switch highway=steps 3 10000
-assign surfcost switch unpaved ${pen[0]} ${pen[1]}
-assign costfactor switch footok add hwcost surfcost 10000
-
----context:node
-assign initialcost 0
-`;
-}
-const profileCache = {};
-async function getProfile(surface, elev){
-  const key = surface + '|' + elev;
-  if (profileCache[key] !== undefined) return profileCache[key];
-  try{
-    const r = await fetch('https://brouter.de/brouter/profile', {method:'POST', body: runProfile(surface, elev)});
-    const j = await r.json();
-    if (!j.profileid) throw new Error(j.error || 'geen profileid');
-    return profileCache[key] = j.profileid;
-  } catch(e){ console.warn('Eigen profiel niet beschikbaar, val terug op standaard:', e); return profileCache[key] = null; }
-}
 function offset(ll, distM, bearingDeg){
   const b = bearingDeg * Math.PI/180;
   return [ll[0] + distM*Math.cos(b)/111320, ll[1] + distM*Math.sin(b)/(111320*Math.cos(ll[0]*Math.PI/180))];
@@ -396,12 +388,6 @@ function overlap(a, b){
   let n = 0; for (const k of a.cells) if (b.cells.has(k)) n++;
   return n / Math.min(a.cells.size, b.cells.size);
 }
-const PROFILES = {
-  paved:   ['trekking','safety','trekking','fastbike'],
-  unpaved: ['hiking-mountain','hiking-mountain','trekking','hiking-mountain'],
-  any:     ['trekking','hiking-mountain','shortest','trekking']
-};
-
 /* ---------- genereren ---------- */
 const N_CANDS = 8, N_SHOW = 4;
 state.seen = []; state.genKey = '';
@@ -413,9 +399,6 @@ async function generate(){
   const key = [state.start.join(','), D, state.activity, state.surface, state.elev, state.elevAmt].join('|');
   if (key !== state.genKey){ state.seen = []; state.genKey = key; }
   btn.disabled = true; $('cards').innerHTML = ''; $('warn').innerHTML = '';
-  setStatus('Profiel voorbereiden…');
-  const custom = await getProfile(state.surface, state.elev);
-  const fallback = PROFILES[state.surface];
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const tol = 0.10;                                              // max. 10% afwijking van de gewenste afstand
   const within = rt => Math.abs(rt.length - D*1000) <= tol*D*1000;
@@ -423,17 +406,13 @@ async function generate(){
     let scale = state.scaleHint || 1, errs = 0;                   // begin met wat eerdere rondjes hier leerden
     for (let it = 0; it < 3; it++){
       try {
-        const rt = await brouter(shapePoints(state.start, D*1000, c.shape, scale), c.profile);
+        const rt = await brouter(shapePoints(state.start, D*1000, c.shape, scale), state.surface, state.elev);
         if (!c.route || Math.abs(rt.length - D*1000) < Math.abs(c.route.length - D*1000)) c.route = rt;
         const ratio = D*1000 / rt.length;
         if (Math.abs(ratio - 1) < 0.07){ state.scaleHint = ((state.scaleHint || scale) + scale) / 2; break; }
         scale *= Math.max(0.4, Math.min(2, ratio));
       } catch(e){
         c.err = e.message;
-        if (!c.route && c.profile.startsWith('custom')){   // eigen profiel faalt → standaardprofiel
-          delete profileCache[state.surface + '|' + state.elev];
-          c.profile = fallback[0]; it--; continue;
-        }
         if (++errs <= 2){ await sleep(1200); it--; continue; }   // server druk: even wachten en opnieuw
         break;
       }
@@ -464,7 +443,7 @@ async function generate(){
   };
   state.userPicked = false;
   for (let round = 0; round < 3; round++){
-    const n = round === 0 ? 6 : 4, base = Math.random()*360;
+    const n = round === 0 ? 8 : 6, base = Math.random()*360;
     // vanaf ronde 2: zoek gericht in de richtingen waar de ondergrond het best paste (bv. richting het bos)
     let dirs = null;
     if (round > 0 && state.surface !== 'any' && all.length){
@@ -474,13 +453,12 @@ async function generate(){
       if (second) dirs.push(second.theta);
     }
     const cands = Array.from({length:n}, (_, i) => ({
-      profile: custom || fallback[i % fallback.length],
       shape: randomShape(dirs ? dirs[i % dirs.length] + Math.random()*60 - 30
                               : base + i*(360/n) + Math.random()*30 - 15)}));
     let done = 0;
     const queue = cands.slice(), label = round ? 'Nog betere rondjes zoeken…' : 'Rondjes bedenken…';
     setStatus(`${label} 0/${n}`);
-    await Promise.all([0,1,2,3].map(async () => { while (queue.length){ await run(queue.shift());
+    await Promise.all([0,1,2].map(async () => { while (queue.length){ await run(queue.shift());
       setStatus(`${label} ${++done}/${n}`); } }));
     cands.forEach(c => { if (c.route){ c.route.theta = c.shape.theta; all.push(c.route); } });
     const good = all.filter(within), bestMatch = Math.max(0, ...good.map(surfMatch));
@@ -605,7 +583,7 @@ async function updateDraw(){
   }
   $('drawStatus').textContent = 'Route berekenen…';
   try{
-    const rt = await brouter(pts, state.activity === 'trail' ? 'hiking-mountain' : 'trekking');
+    const rt = await brouter(pts, state.activity === 'trail' ? 'unpaved' : 'any', 'yes');
     showRoute(rt); $('drawStatus').textContent = '';
   } catch(e){ $('drawStatus').textContent = 'Kon geen route berekenen: ' + e.message; }
 }
