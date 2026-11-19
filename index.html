@@ -169,8 +169,8 @@
 <script>
 /* ---------- kaart ---------- */
 const map = L.map('map', {zoomControl:true}).setView([52.09, 5.12], 9);
-const base = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-  {maxZoom:19, attribution:'© OpenStreetMap, © CARTO'}).addTo(map);
+const base = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  {maxZoom:19, attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'}).addTo(map);
 const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
   {maxZoom:17, attribution:'© OpenStreetMap, SRTM | © OpenTopoMap'});
 L.control.layers({'Kaart':base, 'Topo (hoogtelijnen)':topo}).addTo(map);
@@ -289,8 +289,70 @@ function parseRoute(j, profile){
     while (s < secs.length - 1 && secs[s].end < mid) s++;
     segU.push(secs.length ? secs[s].u : false);
   }
-  return {coords, cum, segU, length:total, ascend:+p['filtered ascend'] || 0,
-          unpavedFrac: acc ? unp/acc : 0, profile, hasElev: coords.some(c => c[2] != null)};
+  return finishRoute(trimSpurs(coords, segU), profile);
+}
+// knip doodlopende heen-en-terug-stukjes weg
+function trimSpurs(coords, segU){
+  const pts = [coords[0]], us = [];
+  for (let i = 1; i < coords.length; i++){
+    const n = pts.length;
+    if (n >= 2 && hav(coords[i], pts[n-2]) < 3){ pts.pop(); us.pop(); continue; }
+    if (hav(coords[i], pts[n-1]) < 0.5) continue;
+    pts.push(coords[i]); us.push(segU[i-1]);
+  }
+  return {coords: pts, segU: us};
+}
+function finishRoute({coords, segU}, profile){
+  const cum = [0]; let unp = 0, asc = 0, ref = null;
+  for (let i = 1; i < coords.length; i++){
+    const d = hav(coords[i-1], coords[i]);
+    cum.push(cum[i-1] + d); if (segU[i-1]) unp += d;
+  }
+  for (const c of coords){            // hoogtemeters met 3 m hysterese
+    if (c[2] == null) continue;
+    if (ref == null || c[2] < ref) ref = c[2];
+    else if (c[2] - ref >= 3){ asc += c[2] - ref; ref = c[2]; }
+  }
+  const len = cum[cum.length-1];
+  return {coords, cum, segU, length: len, ascend: asc, unpavedFrac: len ? unp/len : 0,
+          profile, hasElev: coords.some(c => c[2] != null)};
+}
+
+/* eigen hardloopprofiel voor BRouter (valt terug op standaardprofielen als uploaden mislukt) */
+function runProfile(surface, elev){
+  const pen = {paved:[1.5,0], unpaved:[0,1.5], any:[0,0]}[surface];   // [straf onverhard, straf verhard]
+  return `---context:global
+assign validForFoot 1
+assign turncost 0
+assign initialcost 0
+assign downhillcost 0
+assign downhillcutoff 1.5
+assign uphillcost ${elev === 'no' ? 80 : 0}
+assign uphillcutoff 1.5
+
+---context:way
+assign knownunpaved surface=unpaved|gravel|fine_gravel|dirt|ground|grass|sand|compacted|mud
+assign knownpaved surface=paved|asphalt|concrete|paving_stones|sett|cobblestone
+assign unpaved switch knownunpaved 1 switch knownpaved 0 switch highway=path|track|bridleway switch tracktype=grade1 0 1 0
+assign footok switch foot=no|private 0 switch foot=yes|designated|permissive 1 switch access=private|no 0 1
+assign hwcost switch highway=motorway|motorway_link|trunk|trunk_link 10000 switch highway=primary|primary_link 5 switch highway=secondary|secondary_link 3 switch highway=tertiary|tertiary_link 2 switch highway=residential|living_street|pedestrian|footway|cycleway|unclassified|service|road 1.2 switch highway=path|track|bridleway 1.1 switch highway=steps 3 10000
+assign surfcost switch unpaved ${pen[0]} ${pen[1]}
+assign costfactor switch footok add hwcost surfcost 10000
+
+---context:node
+assign initialcost 0
+`;
+}
+const profileCache = {};
+async function getProfile(surface, elev){
+  const key = surface + '|' + elev;
+  if (profileCache[key] !== undefined) return profileCache[key];
+  try{
+    const r = await fetch('https://brouter.de/brouter/profile', {method:'POST', body: runProfile(surface, elev)});
+    const j = await r.json();
+    if (!j.profileid) throw new Error(j.error || 'geen profileid');
+    return profileCache[key] = j.profileid;
+  } catch(e){ console.warn('Eigen profiel niet beschikbaar, val terug op standaard:', e); return profileCache[key] = null; }
 }
 function offset(ll, distM, bearingDeg){
   const b = bearingDeg * Math.PI/180;
@@ -315,8 +377,10 @@ async function generate(){
   if (!state.start) return setStatus('Kies eerst een startpunt (zoek, locatie of klik op de kaart).', true);
   const D = +$('dist').value, btn = $('genBtn');
   btn.disabled = true; $('cards').innerHTML = ''; $('warn').innerHTML = '';
-  let profs = PROFILES[state.surface];
-  if (state.activity === 'trail' && state.surface === 'any') profs = ['hiking-mountain','hiking-mountain','trekking','shortest'];
+  setStatus('Profiel voorbereiden…');
+  const custom = await getProfile(state.surface, state.elev);
+  let profs = custom ? [custom, custom, custom, custom] : PROFILES[state.surface];
+  if (!custom && state.activity === 'trail' && state.surface === 'any') profs = ['hiking-mountain','hiking-mountain','trekking','shortest'];
   const base = Math.random()*360;
   const cands = profs.map((profile, i) => ({profile, theta: base + i*90}));
   let done = 0;
@@ -330,7 +394,14 @@ async function generate(){
         const ratio = D*1000 / rt.length;
         if (Math.abs(ratio - 1) < 0.05) break;
         r *= Math.max(0.5, Math.min(1.8, ratio));
-      } catch(e){ c.err = e.message; if (!c.route) break; }
+      } catch(e){
+        c.err = e.message;
+        if (!c.route && c.profile.startsWith('custom')){   // eigen profiel faalt → standaardprofiel
+          delete profileCache[state.surface + '|' + state.elev];
+          c.profile = PROFILES[state.surface][0]; it--; continue;
+        }
+        if (!c.route) break;
+      }
     }
     setStatus(`Rondjes berekenen… (${++done}/${cands.length})`);
   };
