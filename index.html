@@ -358,12 +358,43 @@ function offset(ll, distM, bearingDeg){
   const b = bearingDeg * Math.PI/180;
   return [ll[0] + distM*Math.cos(b)/111320, ll[1] + distM*Math.sin(b)/(111320*Math.cos(ll[0]*Math.PI/180))];
 }
-function loopPoints(start, r, theta){
-  const c = offset(start, r, theta);
+/* Willekeurige rondjesvorm: ellips (rond tot langgerekt), 2–5 tussenpunten, met- of tegen de klok in */
+function randomShape(theta){
+  return {theta, n: 2 + Math.floor(Math.random()*4), elong: 1 + Math.random()*0.9,
+          dir: Math.random() < .5 ? 1 : -1, jit: Array.from({length:6}, () => [Math.random()*2-1, Math.random()*2-1])};
+}
+function shapePoints(start, D, sh, scale){
+  // ellips met halve assen a (langs theta) en b; start ligt op de ellips
+  const P = D / 1.3 * scale;                                    // gewenste omtrek hemelsbreed
+  const e = sh.elong, k = Math.PI*(3*(e+1/e) - Math.sqrt((3*e+1/e)*(e+3/e)));
+  const r = P / k, a = r*e, b = r/e;
+  const c = offset(start, a, sh.theta), th = sh.theta*Math.PI/180;
   const pts = [start];
-  for (let k = 1; k <= 3; k++) pts.push(offset(c, r, theta + 180 + k*90 + (Math.random()*24-12)));
+  for (let i = 1; i <= sh.n; i++){
+    const t = Math.PI + sh.dir*(i*2*Math.PI/(sh.n+1) + sh.jit[i][0]*0.35);
+    const rf = 1 + sh.jit[i][1]*0.2;
+    const x = a*Math.cos(t)*rf, y = b*Math.sin(t)*rf;          // x langs de as, y dwars
+    const north = x*Math.cos(th) - y*Math.sin(th), east = x*Math.sin(th) + y*Math.cos(th);
+    pts.push(offset(offset(c, north, 0), east, 90));
+  }
   pts.push(start);
   return pts;
+}
+/* Rastercellen (~60 m) om overlap tussen routes en dubbel gelopen stukken te meten */
+function cellKey(c){ return Math.round(c[0]/0.00055) + ':' + Math.round(c[1]/0.0009); }
+function analyse(rt){
+  const first = new Map(); let reused = 0;
+  for (let i = 1; i < rt.coords.length; i++){
+    const k = cellKey(rt.coords[i]), d = rt.cum[i] - rt.cum[i-1];
+    if (first.has(k)){ if (rt.cum[i] - first.get(k) > 400) reused += d; }
+    else first.set(k, rt.cum[i]);
+  }
+  rt.cells = new Set(first.keys());
+  rt.reuseFrac = rt.length ? Math.min(1, reused / rt.length) : 0;
+}
+function overlap(a, b){
+  let n = 0; for (const k of a.cells) if (b.cells.has(k)) n++;
+  return n / Math.min(a.cells.size, b.cells.size);
 }
 const PROFILES = {
   paved:   ['trekking','safety','trekking','fastbike'],
@@ -372,48 +403,60 @@ const PROFILES = {
 };
 
 /* ---------- genereren ---------- */
+const N_CANDS = 8, N_SHOW = 4;
+state.seen = []; state.genKey = '';
 $('genBtn').onclick = generate;
 async function generate(){
   if (!state.start) return setStatus('Kies eerst een startpunt (zoek, locatie of klik op de kaart).', true);
   const D = +$('dist').value, btn = $('genBtn');
+  // zelfde instellingen opnieuw? dan eerder getoonde rondjes vermijden
+  const key = [state.start.join(','), D, state.activity, state.surface, state.elev, state.elevAmt].join('|');
+  if (key !== state.genKey){ state.seen = []; state.genKey = key; }
   btn.disabled = true; $('cards').innerHTML = ''; $('warn').innerHTML = '';
   setStatus('Profiel voorbereiden…');
   const custom = await getProfile(state.surface, state.elev);
-  let profs = custom ? [custom, custom, custom, custom] : PROFILES[state.surface];
-  if (!custom && state.activity === 'trail' && state.surface === 'any') profs = ['hiking-mountain','hiking-mountain','trekking','shortest'];
+  const fallback = PROFILES[state.surface];
   const base = Math.random()*360;
-  const cands = profs.map((profile, i) => ({profile, theta: base + i*90}));
+  const cands = Array.from({length:N_CANDS}, (_, i) => ({
+    profile: custom || fallback[i % fallback.length],
+    shape: randomShape(base + i*(360/N_CANDS) + Math.random()*30 - 15)}));
   let done = 0;
-  setStatus(`Rondjes berekenen… (0/${cands.length})`);
+  setStatus(`Rondjes bedenken… (0/${N_CANDS})`);
   const run = async c => {
-    let r = D*1000 / (2*Math.PI*1.3);
-    for (let it = 0; it < 3; it++){
+    let scale = 1;
+    for (let it = 0; it < 2; it++){
       try {
-        const rt = await brouter(loopPoints(state.start, r, c.theta), c.profile);
+        const rt = await brouter(shapePoints(state.start, D*1000, c.shape, scale), c.profile);
         if (!c.route || Math.abs(rt.length - D*1000) < Math.abs(c.route.length - D*1000)) c.route = rt;
         const ratio = D*1000 / rt.length;
         if (Math.abs(ratio - 1) < 0.05) break;
-        r *= Math.max(0.5, Math.min(1.8, ratio));
+        scale *= Math.max(0.5, Math.min(1.8, ratio));
       } catch(e){
         c.err = e.message;
         if (!c.route && c.profile.startsWith('custom')){   // eigen profiel faalt → standaardprofiel
           delete profileCache[state.surface + '|' + state.elev];
-          c.profile = PROFILES[state.surface][0]; it--; continue;
+          c.profile = fallback[0]; it--; continue;
         }
         if (!c.route) break;
       }
     }
-    setStatus(`Rondjes berekenen… (${++done}/${cands.length})`);
+    setStatus(`Rondjes bedenken… (${++done}/${N_CANDS})`);
   };
-  // max 2 tegelijk, om de gratis server te sparen
-  await Promise.all([run(cands[0]).then(() => run(cands[2])), run(cands[1]).then(() => run(cands[3]))]);
+  // 3 tegelijk, om de gratis server te sparen
+  const queue = cands.slice();
+  await Promise.all([0,1,2].map(async () => { while (queue.length) await run(queue.shift()); }));
   btn.disabled = false;
-  const ok = cands.filter(c => c.route);
+  const ok = cands.filter(c => c.route).map(c => c.route);
   if (!ok.length) return setStatus('Geen route gevonden. ' + (cands[0].err || 'Probeer een ander startpunt.'), true);
-  ok.forEach(c => c.score = score(c.route, D));
+  ok.forEach(rt => { analyse(rt); rt.score = score(rt, D); });
   ok.sort((a, b) => a.score - b.score);
-  state.cands = ok.map(c => c.route);
-  setStatus(`${ok.length} opties gevonden — de beste staat bovenaan.`);
+  // kies verschillende rondjes: geen bijna-dubbele opties
+  const pick = [];
+  for (const rt of ok){ if (pick.length < N_SHOW && pick.every(p => overlap(rt, p) < 0.6)) pick.push(rt); }
+  for (const rt of ok){ if (pick.length < N_SHOW && !pick.includes(rt)) pick.push(rt); }
+  state.cands = pick; state.seen.push(...pick);
+  btn.textContent = 'Bedenk andere rondjes';
+  setStatus(`${pick.length} verschillende rondjes — de beste staat bovenaan.`);
   renderCards(); selectRoute(0);
   warnings(state.cands[0]);
 }
@@ -425,6 +468,9 @@ function score(rt, D){
   if (state.elev === 'no') s += a / (D * 15);
   else if (state.elevAmt === 'lt100') s += a > 100 ? (a - 100) / 50 : 0;
   else s += a < 100 ? (100 - a) / 50 : 0;
+  s += rt.reuseFrac * 3;                                         // stukken dubbel lopen = minder leuk
+  const seenMax = state.seen.reduce((m, p) => Math.max(m, overlap(rt, p)), 0);
+  s += seenMax * 2;                                              // al eerder getoond = minder interessant
   return s;
 }
 function warnings(rt){
