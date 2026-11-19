@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>rondjerennen<span>.nl</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v13</span></div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v14</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -337,6 +337,13 @@ function densify(coords, step = 25){
 }
 // knip lussen en uitstapjes weg: komt de route na een omweg weer (bijna) op hetzelfde punt, sla de omweg over
 function trimLoops(coords){
+  for (let pass = 0; pass < 4; pass++){                          // herhalen: na een knip kan een nieuwe lus zichtbaar worden
+    const out = trimLoopsOnce(coords);
+    if (out.length === coords.length || pass === 3) return out;
+    coords = out;
+  }
+}
+function trimLoopsOnce(coords){
   coords = densify(coords);
   const cum = [0];
   for (let i = 1; i < coords.length; i++) cum.push(cum[i-1] + hav(coords[i-1], coords[i]));
@@ -438,8 +445,8 @@ async function generate(){
   btn.disabled = true; $('cards').innerHTML = ''; $('warn').innerHTML = '';
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const tol = 0.10, within = rt => Math.abs(rt.length - target) <= tol*target;
-  const strict = state.surface !== 'any', unp = state.surface === 'unpaved';
-  const thr = unp ? 0.6 : 0.85, maxCands = unp ? 9 : strict ? 6 : 7;   // onverhard mag langer zoeken
+  const unp = state.surface === 'unpaved', strict = unp;   // alleen onverhard vooraf op ondergrond keuren
+  const thr = 0.6, maxCands = unp ? 8 : 7;   // onverhard mag langer zoeken
   const label = unp ? 'Onverharde rondjes zoeken…' : 'Rondjes bedenken…';
   const pool = [], spare = [], far = [];
   let stop = false, made = 0;
@@ -496,6 +503,11 @@ async function generate(){
     const good = strict ? pool.filter(r => surfMatch(r) >= thr).length : pool.length;
     setStatus(`${label} ${good} van ${N_SHOW} gevonden`);
     if (good >= N_SHOW) stop = true;
+    // meer onverhard zit er hier niet in? dan niet eindeloos doorzoeken
+    if (strict && made >= 6 && pool.length >= N_SHOW){
+      const m = pool.map(surfMatch).sort((a, b) => b - a);
+      if (m[N_SHOW-1] >= 0.8 * m[0]) stop = true;
+    }
   };
   const worker = async () => { while (!stop && made < maxCands){ const i = made++; await tryCand(randomShape(thetaFor(i))); } };
   await Promise.all([worker(), worker()]);
