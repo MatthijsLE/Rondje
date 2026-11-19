@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>Rondje<span>.</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat.</div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v5</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -443,16 +443,26 @@ async function generate(){
   const all = [];
   for (let round = 0; round < 3; round++){
     const n = round === 0 ? N_CANDS : 6, base = Math.random()*360;
+    // vanaf ronde 2: zoek gericht in de richtingen waar de ondergrond het best paste (bv. richting het bos)
+    let dirs = null;
+    if (round > 0 && state.surface !== 'any' && all.length){
+      const best = all.slice().sort((a, b) => surfMatch(b) - surfMatch(a));
+      dirs = [best[0].theta];
+      const second = best.find(r => Math.abs(((r.theta - dirs[0]) % 360 + 540) % 360 - 180) > 40);
+      if (second) dirs.push(second.theta);
+    }
     const cands = Array.from({length:n}, (_, i) => ({
       profile: custom || fallback[i % fallback.length],
-      shape: randomShape(base + i*(360/n) + Math.random()*30 - 15)}));
+      shape: randomShape(dirs ? dirs[i % dirs.length] + Math.random()*60 - 30
+                              : base + i*(360/n) + Math.random()*30 - 15)}));
     let done = 0;
     const queue = cands.slice();
     setStatus(`Rondjes bedenken… ${round ? '(extra ronde) ' : ''}0/${n}`);
     await Promise.all([0,1].map(async () => { while (queue.length){ await run(queue.shift());
       setStatus(`Rondjes bedenken… ${round ? '(extra ronde) ' : ''}${++done}/${n}`); } }));
-    all.push(...cands.filter(c => c.route).map(c => c.route));
-    if (all.filter(within).length >= N_SHOW + 1) break;
+    cands.forEach(c => { if (c.route){ c.route.theta = c.shape.theta; all.push(c.route); } });
+    const good = all.filter(within), bestMatch = Math.max(0, ...good.map(surfMatch));
+    if (good.length >= N_SHOW + 1 && (round >= 1 || state.surface === 'any' || bestMatch >= 0.8)) break;
   }
   btn.disabled = false;
   if (!all.length) return setStatus('Geen route gevonden. Probeer een ander startpunt of probeer het zo nog eens.', true);
@@ -472,15 +482,17 @@ async function generate(){
   renderCards(); selectRoute(0);
   warnings(state.cands[0]);
 }
+function surfMatch(rt){
+  return state.surface === 'unpaved' ? rt.unpavedFrac : state.surface === 'paved' ? 1 - rt.unpavedFrac : 1;
+}
 function score(rt, D){
-  let s = Math.abs(rt.length/1000 - D) / D * 8;
-  if (state.surface === 'paved')   s += rt.unpavedFrac * 2;
-  if (state.surface === 'unpaved') s += (1 - rt.unpavedFrac) * 2;
+  let s = Math.abs(rt.length/1000 - D) / D * 3;                  // afstand is al begrensd op 10%
+  s += (1 - surfMatch(rt)) * 4;                                  // ondergrond weegt het zwaarst
   const a = rt.ascend;
   if (state.elev === 'no') s += a / (D * 15);
   else if (state.elevAmt === 'lt100') s += a > 100 ? (a - 100) / 50 : 0;
   else s += a < 100 ? (100 - a) / 50 : 0;
-  s += rt.reuseFrac * 3;                                         // stukken dubbel lopen = minder leuk
+  s += rt.reuseFrac * 2;                                         // stukken dubbel lopen = minder leuk
   const seenMax = state.seen.reduce((m, p) => Math.max(m, overlap(rt, p)), 0);
   s += seenMax * 2;                                              // al eerder getoond = minder interessant
   return s;
@@ -490,7 +502,7 @@ function warnings(rt){
   if (state.elev === 'yes' && state.elevAmt === 'gt100' && rt.ascend < 100)
     w.push(`Meer dan 100 hoogtemeters lukt hier niet binnen deze afstand (max. ${Math.round(rt.ascend)} m gevonden). Probeer een heuvelachtiger startpunt of een langere afstand.`);
   if (state.surface === 'unpaved' && rt.unpavedFrac < .5)
-    w.push(`Er is in deze omgeving weinig onverhard te vinden (${Math.round(rt.unpavedFrac*100)}%). Start dichter bij bos of natuurgebied.`);
+    w.push(`Dit rondje is maar voor ${Math.round(rt.unpavedFrac*100)}% onverhard. Klik op "Bedenk andere rondjes" of start dichter bij bos of natuurgebied.`);
   if (state.surface === 'paved' && rt.unpavedFrac > .3)
     w.push(`Dit rondje is voor ${Math.round(rt.unpavedFrac*100)}% onverhard; probeer opnieuw voor een andere variant.`);
   $('warn').innerHTML = w.map(t => `<div class="warn">${t}</div>`).join('');
@@ -506,6 +518,7 @@ function renderCards(){
 function selectRoute(i){
   $('cards').querySelectorAll('.card').forEach(c => c.classList.toggle('on', +c.dataset.i === i));
   showRoute(state.cands[i], true);
+  warnings(state.cands[i]);
 }
 
 /* ---------- route tonen ---------- */
