@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>rondjerennen<span>.nl</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v11</span></div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v12</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -345,7 +345,7 @@ function trimLoops(coords){
     out.push(coords[i]);
     let jump = -1;
     for (let j = i+3; j < coords.length && cum[j] - cum[i] <= maxD; j++)
-      if (cum[j] - cum[i] > 90 && hav(coords[i], coords[j]) < 22) jump = j;
+      if (cum[j] - cum[i] > 90 && hav(coords[i], coords[j]) < 35) jump = j;
     i = jump > 0 ? jump : i + 1;
   }
   return out;
@@ -455,13 +455,13 @@ async function generate(){
     analyse(best);
     // lijkt te veel op een ander rondje, of loopt te veel dubbel? dan alleen als reserve
     if (best.reuseFrac > 0.2 || picks.some(p => overlap(best, p) > 0.6) || state.seen.some(p => overlap(best, p) > 0.75))
-      return void spare.push(best);
+      { spare.push(best); if (made >= 5 && picks.length + spare.length >= N_SHOW) stop = true; return; }
     picks.push(best); state.cands = picks.slice(); refreshCards();
     setStatus(`${picks.length} van ${N_SHOW} rondjes gevonden…`);
     if (picks.length >= N_SHOW) stop = true;
   };
   const base = Math.random()*360;
-  const worker = async () => { while (!stop && made < 9){ const i = made++; await tryCand(randomShape(base + i*137.5 + Math.random()*30 - 15)); } };
+  const worker = async () => { while (!stop && made < 7){ const i = made++; await tryCand(randomShape(base + i*137.5 + Math.random()*30 - 15)); } };
   await Promise.all([worker(), worker()]);
   if (state.runId !== runId) return;
   // aanvullen met reserves; als niets binnen de marge viel: de dichtstbijzijnde
