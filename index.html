@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>rondjerennen<span>.nl</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v12</span></div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v13</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -276,9 +276,9 @@ function decode6(str){
 function costing(surface, elev){
   return {pedestrian: {
     use_tracks: surface === 'unpaved' ? 1 : surface === 'paved' ? 0 : 0.5,
-    walkway_factor: surface === 'unpaved' ? 0.6 : 1,
+    walkway_factor: surface === 'unpaved' ? 0.5 : 1,
     use_hills: elev === 'no' ? 0 : state.elevAmt === 'gt100' ? 1 : 0.5,
-    max_hiking_difficulty: 3}};
+    max_hiking_difficulty: 6}};
 }
 async function vpost(path, body){
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 15000);
@@ -423,25 +423,57 @@ function overlap(a, b){
 const N_SHOW = 3;
 state.seen = []; state.genKey = '';
 $('genBtn').onclick = generate;
+function bearing(a, b){
+  return (Math.atan2((b[1]-a[1]) * Math.cos(a[0]*Math.PI/180), b[0]-a[0]) * 180/Math.PI + 360) % 360;
+}
 async function generate(){
   if (!state.start) return setStatus('Kies eerst een startpunt (zoek, locatie of klik op de kaart).', true);
   const D = +$('dist').value, target = D*1000, btn = $('genBtn'), runId = state.runId = (state.runId || 0) + 1;
   // zelfde instellingen opnieuw? dan eerder getoonde rondjes vermijden
   const key = [state.start.join(','), D, state.activity, state.surface, state.elev, state.elevAmt].join('|');
   if (key !== state.genKey){ state.seen = []; state.genKey = key; }
+  // onverharde paden die we rond dit startpunt al gevonden hebben (wordt bij elk rondje slimmer)
+  if (state.spotKey !== state.start.join(',')){ state.spots = []; state.spotKey = state.start.join(','); }
+  const spots = state.spots, start = state.start;
   btn.disabled = true; $('cards').innerHTML = ''; $('warn').innerHTML = '';
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const tol = 0.10, within = rt => Math.abs(rt.length - target) <= tol*target;
-  const picks = [], spare = [], far = [];
+  const strict = state.surface !== 'any', unp = state.surface === 'unpaved';
+  const thr = unp ? 0.6 : 0.85, maxCands = unp ? 9 : strict ? 6 : 7;   // onverhard mag langer zoeken
+  const label = unp ? 'Onverharde rondjes zoeken…' : 'Rondjes bedenken…';
+  const pool = [], spare = [], far = [];
   let stop = false, made = 0;
-  state.cands = []; showRoute(null);
-  setStatus('Rondjes bedenken…');
+  const top = () => (strict ? pool.slice().sort((a, b) => surfMatch(b) - surfMatch(a)) : pool).slice(0, N_SHOW);
+  const show = () => { state.cands = top(); refreshCards(); };
+  state.cands = []; showRoute(null); setStatus(label);
+  // richting kiezen: eerst rondom verkennen, daarna naar waar het meeste onverhard ligt
+  const base = Math.random()*360;
+  const thetaFor = i => {
+    if (unp && i >= 3 && spots.length >= 15){
+      const w = new Array(12).fill(0);
+      spots.forEach(p => w[Math.floor(bearing(start, p) / 30) % 12]++);
+      const rank = w.map((n, k) => [n, k]).filter(x => x[0] > 0).sort((a, b) => b[0] - a[0]).slice(0, 3);
+      return rank[i % rank.length][1]*30 + 15 + Math.random()*40 - 20;
+    }
+    return unp || i < 3 ? base + i*120 + (i >= 3 ? 60 : 0) + Math.random()*30 - 15 : base + i*137.5 + Math.random()*30 - 15;
+  };
+  // tussenpunten op een bekend onverhard pad leggen als er een in de buurt is
+  const snap = p => {
+    const near = spots.filter(q => hav(p, q) < target/10);
+    return near.length ? near[Math.floor(Math.random()*near.length)] : p;
+  };
+  const harvest = rt => {
+    for (let i = 0; i < rt.segU.length; i += 6) if (rt.segU[i] && hav(start, rt.coords[i]) > 300) spots.push([rt.coords[i][0], rt.coords[i][1]]);
+    if (spots.length > 4000) spots.splice(0, spots.length - 4000);
+  };
   // één kandidaat: vorm kiezen, zo nodig 1–2 keer bijsturen op afstand
   const tryCand = async shape => {
     let scale = state.scaleHint || 1, best = null, errs = 0;
     for (let it = 0; it < 3 && !stop; it++){
       try {
-        const rt = await brouter(shapePoints(state.start, target, shape, scale), state.surface, state.elev);
+        let pts = shapePoints(start, target, shape, scale);
+        if (unp && spots.length) pts = pts.map((p, k) => (k === 0 || k === pts.length-1) ? p : snap(p));
+        const rt = await brouter(pts, state.surface, state.elev);
         if (!best || Math.abs(rt.length - target) < Math.abs(best.length - target)) best = rt;
         if (within(rt)){ state.scaleHint = ((state.scaleHint || scale) + scale) / 2; break; }
         scale *= Math.max(0.4, Math.min(2, target / rt.length));
@@ -450,38 +482,44 @@ async function generate(){
         break;
       }
     }
-    if (!best || stop || state.runId !== runId) return;
+    if (!best || state.runId !== runId) return;
     if (!within(best)) return void far.push(best);
     analyse(best);
+    if (strict){ await addSurface(best); if (state.runId !== runId) return; if (unp) harvest(best); }
     // lijkt te veel op een ander rondje, of loopt te veel dubbel? dan alleen als reserve
-    if (best.reuseFrac > 0.2 || picks.some(p => overlap(best, p) > 0.6) || state.seen.some(p => overlap(best, p) > 0.75))
-      { spare.push(best); if (made >= 5 && picks.length + spare.length >= N_SHOW) stop = true; return; }
-    picks.push(best); state.cands = picks.slice(); refreshCards();
-    setStatus(`${picks.length} van ${N_SHOW} rondjes gevonden…`);
-    if (picks.length >= N_SHOW) stop = true;
+    if (best.reuseFrac > 0.2 || pool.some(p => overlap(best, p) > 0.6) || state.seen.some(p => overlap(best, p) > 0.75)){
+      spare.push(best);
+      if (!strict && made >= 5 && pool.length + spare.length >= N_SHOW) stop = true;
+      return;
+    }
+    pool.push(best); show();
+    const good = strict ? pool.filter(r => surfMatch(r) >= thr).length : pool.length;
+    setStatus(`${label} ${good} van ${N_SHOW} gevonden`);
+    if (good >= N_SHOW) stop = true;
   };
-  const base = Math.random()*360;
-  const worker = async () => { while (!stop && made < 7){ const i = made++; await tryCand(randomShape(base + i*137.5 + Math.random()*30 - 15)); } };
+  const worker = async () => { while (!stop && made < maxCands){ const i = made++; await tryCand(randomShape(thetaFor(i))); } };
   await Promise.all([worker(), worker()]);
   if (state.runId !== runId) return;
   // aanvullen met reserves; als niets binnen de marge viel: de dichtstbijzijnde
-  spare.sort((a, b) => a.reuseFrac - b.reuseFrac);
-  for (const rt of spare) if (picks.length < N_SHOW) picks.push(rt);
-  const offDist = !picks.length;
-  if (offDist){ far.sort((a, b) => Math.abs(a.length - target) - Math.abs(b.length - target)); far.slice(0, 2).forEach(rt => { analyse(rt); picks.push(rt); }); }
+  spare.sort((a, b) => strict ? surfMatch(b) - surfMatch(a) : a.reuseFrac - b.reuseFrac);
+  for (const rt of spare) if (pool.length < N_SHOW) pool.push(rt);
+  const offDist = !pool.length;
+  if (offDist){ far.sort((a, b) => Math.abs(a.length - target) - Math.abs(b.length - target)); far.slice(0, 2).forEach(rt => { analyse(rt); pool.push(rt); }); }
   btn.disabled = false;
-  if (!picks.length) return setStatus('Geen route gevonden. Probeer een ander startpunt of probeer het zo nog eens.', true);
+  if (!pool.length) return setStatus('Geen route gevonden. Probeer een ander startpunt of probeer het zo nog eens.', true);
   btn.textContent = 'Bedenk 3 andere rondjes';
-  state.cands = picks.slice(); state.seen.push(...picks); refreshCards();
+  show(); state.seen.push(...state.cands);
   setStatus(offDist ? `Geen rondje binnen ${Math.round(tol*100)}% van ${D} km gevonden; dit zijn de dichtstbijzijnde.`
-                    : `${picks.length} rondjes van ongeveer ${D.toString().replace('.', ',')} km. Niet goed? Klik nog eens voor andere.`, offDist);
-  // ondergrond pas daarna ophalen, zodat de rondjes meteen in beeld staan
-  for (const rt of picks){
+                    : `${state.cands.length} rondjes van ongeveer ${D.toString().replace('.', ',')} km. Niet goed? Klik nog eens voor andere.`, offDist);
+  // ondergrond die nog ontbreekt pas daarna ophalen, zodat de rondjes meteen in beeld staan
+  for (const rt of state.cands.slice()){
+    if (rt.surfKnown) continue;
     await addSurface(rt);
     if (state.runId !== runId) return;
     refreshCards();
     if (state.route === rt){ showRoute(rt, false); warnings(rt); }
   }
+  if (state.route) warnings(state.route);
 }
 // kaartjes opnieuw tekenen en het getoonde rondje geselecteerd houden (of het eerste tonen)
 function refreshCards(){
