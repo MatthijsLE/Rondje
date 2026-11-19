@@ -416,52 +416,64 @@ async function generate(){
   setStatus('Profiel voorbereiden…');
   const custom = await getProfile(state.surface, state.elev);
   const fallback = PROFILES[state.surface];
-  const base = Math.random()*360;
-  const cands = Array.from({length:N_CANDS}, (_, i) => ({
-    profile: custom || fallback[i % fallback.length],
-    shape: randomShape(base + i*(360/N_CANDS) + Math.random()*30 - 15)}));
-  let done = 0;
-  setStatus(`Rondjes bedenken… (0/${N_CANDS})`);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const tol = 0.10;                                              // max. 10% afwijking van de gewenste afstand
+  const within = rt => Math.abs(rt.length - D*1000) <= tol*D*1000;
   const run = async c => {
-    let scale = 1;
-    for (let it = 0; it < 2; it++){
+    let scale = 1, errs = 0;
+    for (let it = 0; it < 4; it++){
       try {
         const rt = await brouter(shapePoints(state.start, D*1000, c.shape, scale), c.profile);
         if (!c.route || Math.abs(rt.length - D*1000) < Math.abs(c.route.length - D*1000)) c.route = rt;
         const ratio = D*1000 / rt.length;
-        if (Math.abs(ratio - 1) < 0.05) break;
-        scale *= Math.max(0.5, Math.min(1.8, ratio));
+        if (Math.abs(ratio - 1) < 0.04) break;
+        scale *= Math.max(0.4, Math.min(2, ratio));
       } catch(e){
         c.err = e.message;
         if (!c.route && c.profile.startsWith('custom')){   // eigen profiel faalt → standaardprofiel
           delete profileCache[state.surface + '|' + state.elev];
           c.profile = fallback[0]; it--; continue;
         }
-        if (!c.route) break;
+        if (++errs <= 2){ await sleep(1500); it--; continue; }   // server druk: even wachten en opnieuw
+        break;
       }
     }
-    setStatus(`Rondjes bedenken… (${++done}/${N_CANDS})`);
   };
-  // 3 tegelijk, om de gratis server te sparen
-  const queue = cands.slice();
-  await Promise.all([0,1,2].map(async () => { while (queue.length) await run(queue.shift()); }));
+  // in rondes rekenen tot er genoeg rondjes binnen de afstand zijn
+  const all = [];
+  for (let round = 0; round < 3; round++){
+    const n = round === 0 ? N_CANDS : 6, base = Math.random()*360;
+    const cands = Array.from({length:n}, (_, i) => ({
+      profile: custom || fallback[i % fallback.length],
+      shape: randomShape(base + i*(360/n) + Math.random()*30 - 15)}));
+    let done = 0;
+    const queue = cands.slice();
+    setStatus(`Rondjes bedenken… ${round ? '(extra ronde) ' : ''}0/${n}`);
+    await Promise.all([0,1].map(async () => { while (queue.length){ await run(queue.shift());
+      setStatus(`Rondjes bedenken… ${round ? '(extra ronde) ' : ''}${++done}/${n}`); } }));
+    all.push(...cands.filter(c => c.route).map(c => c.route));
+    if (all.filter(within).length >= N_SHOW + 1) break;
+  }
   btn.disabled = false;
-  const ok = cands.filter(c => c.route).map(c => c.route);
-  if (!ok.length) return setStatus('Geen route gevonden. ' + (cands[0].err || 'Probeer een ander startpunt.'), true);
-  ok.forEach(rt => { analyse(rt); rt.score = score(rt, D); });
-  ok.sort((a, b) => a.score - b.score);
+  if (!all.length) return setStatus('Geen route gevonden. Probeer een ander startpunt of probeer het zo nog eens.', true);
+  all.forEach(rt => { analyse(rt); rt.score = score(rt, D); });
+  let pool = all.filter(within);
+  const offDist = !pool.length;
+  if (offDist) pool = all.slice().sort((a, b) => Math.abs(a.length - D*1000) - Math.abs(b.length - D*1000)).slice(0, 2);
+  pool.sort((a, b) => a.score - b.score);
   // kies verschillende rondjes: geen bijna-dubbele opties
   const pick = [];
-  for (const rt of ok){ if (pick.length < N_SHOW && pick.every(p => overlap(rt, p) < 0.6)) pick.push(rt); }
-  for (const rt of ok){ if (pick.length < N_SHOW && !pick.includes(rt)) pick.push(rt); }
+  for (const rt of pool){ if (pick.length < N_SHOW && pick.every(p => overlap(rt, p) < 0.6)) pick.push(rt); }
+  for (const rt of pool){ if (pick.length < N_SHOW && !pick.includes(rt)) pick.push(rt); }
   state.cands = pick; state.seen.push(...pick);
   btn.textContent = 'Bedenk andere rondjes';
-  setStatus(`${pick.length} verschillende rondjes — de beste staat bovenaan.`);
+  setStatus(offDist ? `Geen rondje binnen ${Math.round(tol*100)}% van ${D} km gevonden; dit zijn de dichtstbijzijnde.`
+                    : `${pick.length} rondjes tussen ${km(D*1000*(1-tol))} en ${km(D*1000*(1+tol))} — de beste staat bovenaan.`, offDist);
   renderCards(); selectRoute(0);
   warnings(state.cands[0]);
 }
 function score(rt, D){
-  let s = Math.abs(rt.length/1000 - D) / D * 4;
+  let s = Math.abs(rt.length/1000 - D) / D * 8;
   if (state.surface === 'paved')   s += rt.unpavedFrac * 2;
   if (state.surface === 'unpaved') s += (1 - rt.unpavedFrac) * 2;
   const a = rt.ascend;
