@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>rondjerennen<span>.nl</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v15</span></div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v16</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -475,11 +475,13 @@ async function generate(){
   };
   // één kandidaat: vorm kiezen, zo nodig 1–2 keer bijsturen op afstand
   const tryCand = async shape => {
-    let scale = state.scaleHint || 1, best = null, errs = 0;
+    const s0 = state.scaleHint || 1; let scale = s0, best = null, errs = 0;
+    // tussenpunten één keer bepalen (en op bekende paden leggen); bijsturen = dezelfde punten dichter bij of verder van de start
+    let basePts = shapePoints(start, target, shape, s0);
+    if (unp && spots.length) basePts = basePts.map((p, k) => (k === 0 || k === basePts.length-1) ? p : snap(p));
     for (let it = 0; it < 3 && !stop; it++){
       try {
-        let pts = shapePoints(start, target, shape, scale);
-        if (unp && spots.length) pts = pts.map((p, k) => (k === 0 || k === pts.length-1) ? p : snap(p));
+        const f = scale / s0, pts = basePts.map(p => [start[0] + (p[0]-start[0])*f, start[1] + (p[1]-start[1])*f]);
         const rt = await brouter(pts, state.surface, state.elev);
         if (!best || Math.abs(rt.length - target) < Math.abs(best.length - target)) best = rt;
         if (within(rt)){ state.scaleHint = ((state.scaleHint || scale) + scale) / 2; break; }
