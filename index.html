@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>rondjerennen<span>.nl</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v9</span></div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v10</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -359,7 +359,7 @@ function finishRoute({coords, segU}, profile){
   for (const c of coords){            // hoogtemeters met 3 m hysterese
     if (c[2] == null) continue;
     if (ref == null || c[2] < ref) ref = c[2];
-    else if (c[2] - ref >= 3){ asc += c[2] - ref; ref = c[2]; }
+    else if (c[2] - ref >= 5){ asc += c[2] - ref; ref = c[2]; }
   }
   const len = cum[cum.length-1];
   return {coords, cum, segU, length: len, ascend: asc, unpavedFrac: len ? unp/len : 0,
