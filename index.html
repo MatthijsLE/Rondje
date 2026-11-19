@@ -8,7 +8,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-  :root{--ink:#16181d;--muted:#6b7280;--line:#e5e7eb;--bg:#f6f6f4;--acc:#0e7490;--acc2:#155e75;--paved:#2b2f3a;--unpaved:#c47a2c;}
+  :root{--ink:#16181d;--muted:#6b7280;--line:#e5e7eb;--bg:#f6f6f4;--acc:#24523f;--acc2:#183a2c;--paved:#2b2f3a;--unpaved:#c47a2c;}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;font-family:Inter,system-ui,sans-serif;color:var(--ink);background:var(--bg)}
   #app{display:grid;grid-template-columns:380px 1fr;height:100vh}
@@ -23,7 +23,7 @@
   label.h{display:block;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:16px 0 6px}
   .seg{display:flex;gap:6px;flex-wrap:wrap}
   .seg button{flex:1;min-width:80px;border:1.5px solid var(--line);background:#fff;padding:9px 6px;border-radius:9px;font:600 13px Inter;cursor:pointer;color:var(--ink)}
-  .seg button.on{border-color:var(--acc);background:#e6f4f7;color:var(--acc2)}
+  .seg button.on{border-color:var(--acc);background:#e8f0ea;color:var(--acc2)}
   .row{display:flex;gap:6px}
   input[type=text],input[type=number]{width:100%;border:1.5px solid var(--line);border-radius:9px;padding:9px 10px;font:500 14px Inter}
   input[type=range]{width:100%;accent-color:var(--acc)}
@@ -40,7 +40,7 @@
   .warn{background:#fff7e6;border:1px solid #f5d38a;color:#7a5200;font-size:12.5px;padding:8px 10px;border-radius:8px;margin-top:10px}
   .cards{display:flex;flex-direction:column;gap:8px;margin-top:14px}
   .card{border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:13px}
-  .card.on{border-color:var(--acc);background:#e6f4f7}
+  .card.on{border-color:var(--acc);background:#e8f0ea}
   .card .t{font-weight:700}
   .card .m{color:var(--muted);font-size:12px}
   #routeInfo{margin-top:22px;border-top:1px solid var(--line);padding-top:16px;display:none}
@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>rondjerennen<span>.nl</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v10</span></div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v11</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -205,7 +205,7 @@ $('pace').oninput = () => state.route && renderStats(state.route);
 function setStart(ll, fly){
   state.start = [ll.lat ?? ll[0], ll.lng ?? ll[1]];
   if (!startMarker){
-    startMarker = L.marker(state.start, {draggable:true, icon:pin('#0e7490')}).addTo(map);
+    startMarker = L.marker(state.start, {draggable:true, icon:pin('#24523f')}).addTo(map);
     startMarker.on('dragend', e => setStart(e.target.getLatLng()));
   } else startMarker.setLatLng(state.start);
   $('startHint').textContent = `Start: ${state.start[0].toFixed(4)}, ${state.start[1].toFixed(4)}`;
@@ -325,17 +325,28 @@ async function addSurface(rt){
   rt.unpavedFrac = rt.length ? unp / rt.length : 0; rt.surfKnown = true;
   return rt;
 }
-// knip kleine lusjes weg: komt de route binnen 800 m weer op hetzelfde punt, sla het tussenstuk over
+// punten om de ~25 m, zodat ook lange rechte stukken vergeleken kunnen worden
+function densify(coords, step = 25){
+  const out = [coords[0]];
+  for (let i = 1; i < coords.length; i++){
+    const a = coords[i-1], b = coords[i], n = Math.max(1, Math.ceil(hav(a, b) / step));
+    for (let k = 1; k <= n; k++){ const t = k/n;
+      out.push([a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t, a[2] == null || b[2] == null ? b[2] : a[2] + (b[2]-a[2])*t]); }
+  }
+  return out;
+}
+// knip lussen en uitstapjes weg: komt de route na een omweg weer (bijna) op hetzelfde punt, sla de omweg over
 function trimLoops(coords){
-  const out = [];
+  coords = densify(coords);
+  const cum = [0];
+  for (let i = 1; i < coords.length; i++) cum.push(cum[i-1] + hav(coords[i-1], coords[i]));
+  const maxD = Math.min(3000, cum[cum.length-1] * 0.3), out = [];
   for (let i = 0; i < coords.length;){
     out.push(coords[i]);
-    let d = 0, jump = -1;
-    for (let j = i+1; j < coords.length && d < 800; j++){
-      d += hav(coords[j-1], coords[j]);
-      if (j > i+2 && d > 40 && hav(coords[i], coords[j]) < 10) jump = j;
-    }
-    i = jump > 0 ? jump + 1 : i + 1;
+    let jump = -1;
+    for (let j = i+3; j < coords.length && cum[j] - cum[i] <= maxD; j++)
+      if (cum[j] - cum[i] > 90 && hav(coords[i], coords[j]) < 22) jump = j;
+    i = jump > 0 ? jump : i + 1;
   }
   return out;
 }
@@ -564,8 +575,8 @@ function renderProfile(rt){
   let lo = Math.min(...ys), hi = Math.max(...ys); if (hi - lo < 20){ const m = (hi+lo)/2; lo = m-10; hi = m+10; }
   const X = x => x/maxX*300, Y = y => 82 - (y-lo)/(hi-lo)*70;
   const line = pts.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1)).join('');
-  svg.innerHTML = `<path d="${line}L300,90L0,90Z" fill="#0e7490" fill-opacity=".18"/>
-    <path d="${line}" fill="none" stroke="#0e7490" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+  svg.innerHTML = `<path d="${line}L300,90L0,90Z" fill="#24523f" fill-opacity=".18"/>
+    <path d="${line}" fill="none" stroke="#24523f" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
     <text x="4" y="12" font-size="9" fill="#6b7280">${Math.round(hi)} m</text>
     <text x="4" y="86" font-size="9" fill="#6b7280">${Math.round(lo)} m</text>`;
 }
@@ -574,7 +585,7 @@ function renderProfile(rt){
 let drawTimer, drawSeq = 0;
 function addDrawPoint(ll){
   state.drawPts.push([ll.lat, ll.lng]);
-  L.marker(ll, {icon: pin(state.drawPts.length === 1 ? '#0e7490' : '#2b2f3a', state.drawPts.length === 1 ? 18 : 12)}).addTo(drawMarkers);
+  L.marker(ll, {icon: pin(state.drawPts.length === 1 ? '#24523f' : '#2b2f3a', state.drawPts.length === 1 ? 18 : 12)}).addTo(drawMarkers);
   scheduleDraw();
 }
 $('undoBtn').onclick = () => { state.drawPts.pop(); const ls = drawMarkers.getLayers(); if (ls.length) drawMarkers.removeLayer(ls[ls.length-1]); scheduleDraw(); };
