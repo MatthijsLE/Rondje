@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rondje — routeplanner voor hardlopers</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{--ink:#16181d;--muted:#6b7280;--line:#e5e7eb;--bg:#f6f6f4;--acc:#e4572e;--acc2:#b8401f;--paved:#2b2f3a;--unpaved:#c47a2c;}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;font-family:Inter,system-ui,sans-serif;color:var(--ink);background:var(--bg)}
+  #app{display:grid;grid-template-columns:380px 1fr;height:100vh}
+  #panel{overflow-y:auto;background:#fff;border-right:1px solid var(--line);padding:20px 20px 40px}
+  #map{height:100%}
+  h1{font-size:24px;font-weight:800;margin:0;letter-spacing:-.02em}
+  h1 span{color:var(--acc)}
+  .sub{color:var(--muted);font-size:13px;margin:2px 0 16px}
+  .tabs{display:flex;gap:4px;background:var(--bg);padding:4px;border-radius:10px;margin-bottom:18px}
+  .tabs button{flex:1;border:0;background:transparent;padding:8px;border-radius:8px;font:600 13px Inter;color:var(--muted);cursor:pointer}
+  .tabs button.on{background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  label.h{display:block;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:16px 0 6px}
+  .seg{display:flex;gap:6px;flex-wrap:wrap}
+  .seg button{flex:1;min-width:80px;border:1.5px solid var(--line);background:#fff;padding:9px 6px;border-radius:9px;font:600 13px Inter;cursor:pointer;color:var(--ink)}
+  .seg button.on{border-color:var(--acc);background:#fdf0ec;color:var(--acc2)}
+  .row{display:flex;gap:6px}
+  input[type=text],input[type=number]{width:100%;border:1.5px solid var(--line);border-radius:9px;padding:9px 10px;font:500 14px Inter}
+  input[type=range]{width:100%;accent-color:var(--acc)}
+  .dist{display:flex;align-items:baseline;gap:6px}
+  .dist b{font-size:28px;font-weight:800}
+  .btn{border:0;background:var(--ink);color:#fff;padding:10px 14px;border-radius:9px;font:600 13px Inter;cursor:pointer;white-space:nowrap}
+  .btn.ghost{background:#fff;color:var(--ink);border:1.5px solid var(--line)}
+  .btn.big{width:100%;background:var(--acc);padding:14px;font-size:15px;margin-top:20px}
+  .btn.big:hover{background:var(--acc2)}
+  .btn:disabled{opacity:.5;cursor:default}
+  .hint{font-size:12px;color:var(--muted);margin-top:6px}
+  .status{font-size:13px;margin-top:12px;color:var(--muted);min-height:18px}
+  .status.err{color:#b91c1c}
+  .warn{background:#fff7e6;border:1px solid #f5d38a;color:#7a5200;font-size:12.5px;padding:8px 10px;border-radius:8px;margin-top:10px}
+  .cards{display:flex;flex-direction:column;gap:8px;margin-top:14px}
+  .card{border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:13px}
+  .card.on{border-color:var(--acc);background:#fdf0ec}
+  .card .t{font-weight:700}
+  .card .m{color:var(--muted);font-size:12px}
+  #routeInfo{margin-top:22px;border-top:1px solid var(--line);padding-top:16px;display:none}
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .stat{background:var(--bg);border-radius:10px;padding:10px 12px}
+  .stat .l{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+  .stat .v{font-size:20px;font-weight:800;margin-top:2px}
+  .bar{height:8px;border-radius:4px;background:var(--paved);overflow:hidden;margin-top:12px}
+  .bar i{display:block;height:100%;background:var(--unpaved)}
+  .legend{display:flex;gap:14px;font-size:12px;color:var(--muted);margin-top:6px}
+  .legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px;background:var(--paved)}
+  .legend span.u::before{background:var(--unpaved)}
+  svg.prof{width:100%;height:90px;margin-top:12px;background:var(--bg);border-radius:10px}
+  .actions{display:flex;gap:8px;margin-top:12px}
+  .actions .btn{flex:1}
+  .pace{display:flex;align-items:center;gap:8px;font-size:13px;margin-top:10px}
+  .pace input{width:80px}
+  .saved{display:flex;flex-direction:column;gap:8px}
+  .saved .card button{border:0;background:none;color:var(--muted);cursor:pointer;font-size:16px}
+  .chk{display:flex;align-items:center;gap:8px;font-size:14px;margin-top:10px}
+  .chk input{accent-color:var(--acc);width:16px;height:16px}
+  .hidden{display:none!important}
+  @media (max-width:800px){
+    #app{grid-template-columns:1fr;grid-template-rows:48vh auto;height:auto}
+    #map{height:48vh;order:-1}
+    #panel{border-right:0;border-top:1px solid var(--line)}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="panel">
+    <h1>Rondje<span>.</span></h1>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat.</div>
+
+    <div class="tabs">
+      <button data-tab="gen" class="on">Genereren</button>
+      <button data-tab="draw">Zelf tekenen</button>
+      <button data-tab="saved">Mijn routes</button>
+    </div>
+
+    <!-- GENEREREN -->
+    <section id="tab-gen">
+      <label class="h">Startpunt</label>
+      <div class="row">
+        <input type="text" id="q" placeholder="Adres of plaats…">
+        <button class="btn" id="qBtn">Zoek</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button class="btn ghost" id="locBtn" style="flex:1">📍 Mijn locatie</button>
+      </div>
+      <div class="hint" id="startHint">…of klik op de kaart. Je kunt de startpin daarna verslepen.</div>
+
+      <label class="h">Activiteit</label>
+      <div class="seg" data-key="activity">
+        <button data-v="trail">🌲 Trailrunning</button>
+        <button data-v="road" class="on">🛣️ Roadrunning</button>
+      </div>
+
+      <label class="h">Afstand</label>
+      <div class="dist"><b id="distVal">10</b> km</div>
+      <input type="range" id="dist" min="2" max="42" step="0.5" value="10">
+
+      <label class="h">Ondergrond</label>
+      <div class="seg" data-key="surface">
+        <button data-v="paved" class="on">Verhard</button>
+        <button data-v="unpaved">Onverhard</button>
+        <button data-v="any">Maakt niet uit</button>
+      </div>
+
+      <label class="h">Hoogtemeters</label>
+      <div class="seg" data-key="elev">
+        <button data-v="no" class="on">Nee, zo vlak mogelijk</button>
+        <button data-v="yes">Ja</button>
+      </div>
+      <div class="seg hidden" data-key="elevAmt" id="elevAmt" style="margin-top:6px">
+        <button data-v="lt100" class="on">Minder dan 100 m</button>
+        <button data-v="gt100">Meer dan 100 m</button>
+      </div>
+
+      <button class="btn big" id="genBtn">Genereer rondje</button>
+      <div class="status" id="status"></div>
+      <div id="warn"></div>
+      <div class="cards" id="cards"></div>
+    </section>
+
+    <!-- ZELF TEKENEN -->
+    <section id="tab-draw" class="hidden">
+      <div class="hint" style="font-size:13px;margin-top:0">Klik op de kaart om punten toe te voegen. De afstand wordt direct gemeten.</div>
+      <label class="chk"><input type="checkbox" id="snap" checked> Volg wegen en paden</label>
+      <label class="chk"><input type="checkbox" id="loopBack"> Terug naar startpunt</label>
+      <div class="actions">
+        <button class="btn ghost" id="undoBtn">↶ Ongedaan</button>
+        <button class="btn ghost" id="clearBtn">Wissen</button>
+      </div>
+      <div class="status" id="drawStatus"></div>
+    </section>
+
+    <!-- MIJN ROUTES -->
+    <section id="tab-saved" class="hidden">
+      <div class="saved" id="savedList"></div>
+    </section>
+
+    <!-- ROUTE-INFO -->
+    <div id="routeInfo">
+      <div class="stats">
+        <div class="stat"><div class="l">Afstand</div><div class="v" id="sDist">–</div></div>
+        <div class="stat"><div class="l">Hoogtemeters</div><div class="v" id="sAsc">–</div></div>
+        <div class="stat"><div class="l">Onverhard</div><div class="v" id="sUnp">–</div></div>
+        <div class="stat"><div class="l">Geschatte tijd</div><div class="v" id="sTime">–</div></div>
+      </div>
+      <div class="pace">Tempo <input type="text" id="pace" value="5:30"> min/km</div>
+      <div class="bar"><i id="unpBar" style="width:0"></i></div>
+      <div class="legend"><span>Verhard</span><span class="u">Onverhard</span></div>
+      <svg class="prof" id="prof" viewBox="0 0 300 90" preserveAspectRatio="none"></svg>
+      <div class="actions">
+        <button class="btn" id="gpxBtn">⬇ GPX (voor Strava)</button>
+        <button class="btn ghost" id="saveBtn">☆ Opslaan</button>
+      </div>
+      <div class="hint">Importeer de GPX in Strava via <i>Routes → Importeren</i> of zet hem op je horloge.</div>
+    </div>
+  </aside>
+  <div id="map"></div>
+</div>
+
+<script>
+/* ---------- kaart ---------- */
+const map = L.map('map', {zoomControl:true}).setView([52.09, 5.12], 9);
+const base = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+  {maxZoom:19, attribution:'© OpenStreetMap, © CARTO'}).addTo(map);
+const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+  {maxZoom:17, attribution:'© OpenStreetMap, SRTM | © OpenTopoMap'});
+L.control.layers({'Kaart':base, 'Topo (hoogtelijnen)':topo}).addTo(map);
+
+const $ = id => document.getElementById(id);
+const state = {activity:'road', surface:'paved', elev:'no', elevAmt:'lt100', tab:'gen',
+               start:null, drawPts:[], route:null, cands:[]};
+let startMarker = null, routeLayer = L.layerGroup().addTo(map), drawMarkers = L.layerGroup().addTo(map);
+
+/* ---------- UI: tabs & knoppen ---------- */
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  state.tab = b.dataset.tab;
+  ['gen','draw','saved'].forEach(t => $('tab-'+t).classList.toggle('hidden', t !== state.tab));
+  if (state.tab === 'saved') renderSaved();
+  if (state.tab === 'draw') { state.drawPts = []; drawMarkers.clearLayers(); }
+});
+document.querySelectorAll('.seg').forEach(seg => seg.querySelectorAll('button').forEach(b => b.onclick = () => {
+  seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+  const key = seg.dataset.key; state[key] = b.dataset.v;
+  if (key === 'elev') $('elevAmt').classList.toggle('hidden', b.dataset.v !== 'yes');
+  if (key === 'activity') setSeg('surface', b.dataset.v === 'trail' ? 'unpaved' : 'paved');
+}));
+function setSeg(key, v){
+  state[key] = v;
+  document.querySelectorAll(`.seg[data-key="${key}"] button`).forEach(x => x.classList.toggle('on', x.dataset.v === v));
+}
+$('dist').oninput = e => $('distVal').textContent = (+e.target.value).toString().replace('.', ',');
+$('pace').oninput = () => state.route && renderStats(state.route);
+
+/* ---------- startpunt ---------- */
+function setStart(ll, fly){
+  state.start = [ll.lat ?? ll[0], ll.lng ?? ll[1]];
+  if (!startMarker){
+    startMarker = L.marker(state.start, {draggable:true, icon:pin('#e4572e')}).addTo(map);
+    startMarker.on('dragend', e => setStart(e.target.getLatLng()));
+  } else startMarker.setLatLng(state.start);
+  $('startHint').textContent = `Start: ${state.start[0].toFixed(4)}, ${state.start[1].toFixed(4)}`;
+  if (fly) map.setView(state.start, 14);
+}
+function pin(color, size=18){
+  return L.divIcon({className:'', iconSize:[size,size], iconAnchor:[size/2,size/2],
+    html:`<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)"></div>`});
+}
+map.on('click', e => {
+  if (state.tab === 'draw') addDrawPoint(e.latlng);
+  else setStart(e.latlng);
+});
+$('locBtn').onclick = () => {
+  if (!navigator.geolocation) return setStatus('Locatie niet beschikbaar in deze browser.', true);
+  setStatus('Locatie ophalen…');
+  navigator.geolocation.getCurrentPosition(
+    p => { setStart([p.coords.latitude, p.coords.longitude], true); setStatus(''); },
+    () => setStatus('Kon je locatie niet ophalen. Zoek een adres of klik op de kaart.', true),
+    {enableHighAccuracy:true, timeout:10000});
+};
+async function search(){
+  const q = $('q').value.trim(); if (!q) return;
+  setStatus('Zoeken…');
+  try{
+    const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=1&lang=default&lat=52.1&lon=5.3`);
+    const j = await r.json();
+    if (!j.features.length) return setStatus('Niets gevonden.', true);
+    const [lon, lat] = j.features[0].geometry.coordinates;
+    setStart([lat, lon], true); setStatus('');
+  } catch(e){ setStatus('Zoeken mislukt: ' + e.message, true); }
+}
+$('qBtn').onclick = search;
+$('q').onkeydown = e => { if (e.key === 'Enter') search(); };
+
+function setStatus(t, err){ const s = $('status'); s.textContent = t; s.classList.toggle('err', !!err); }
+
+/* ---------- routering (BRouter) ---------- */
+const UNPAVED = new Set(['unpaved','gravel','fine_gravel','dirt','ground','grass','sand','mud','earth','compacted',
+  'pebblestone','woodchips','forest_floor','rock','grass_paver','shells','soil']);
+function isUnpaved(tags){
+  const t = {};
+  (tags || '').split(' ').forEach(kv => { const i = kv.indexOf('='); if (i > 0) t[kv.slice(0,i)] = kv.slice(i+1); });
+  if (t.surface) return UNPAVED.has(t.surface);
+  if (t.tracktype) return t.tracktype !== 'grade1';
+  return ['path','track','bridleway'].includes(t.highway);
+}
+function hav(a, b){
+  const R = 6371000, r = Math.PI/180, dLa = (b[0]-a[0])*r, dLo = (b[1]-a[1])*r;
+  const h = Math.sin(dLa/2)**2 + Math.cos(a[0]*r)*Math.cos(b[0]*r)*Math.sin(dLo/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+async function brouter(points, profile){
+  const lonlats = points.map(p => p[1].toFixed(6) + ',' + p[0].toFixed(6)).join('|');
+  const url = `https://brouter.de/brouter?lonlats=${lonlats}&profile=${profile}&alternativeidx=0&format=geojson`;
+  const r = await fetch(url);
+  const txt = await r.text();
+  if (!r.ok || txt[0] !== '{') throw new Error(txt.slice(0, 120) || ('HTTP ' + r.status));
+  return parseRoute(JSON.parse(txt), profile);
+}
+function parseRoute(j, profile){
+  const f = j.features[0], p = f.properties;
+  const coords = f.geometry.coordinates.map(c => [c[1], c[0], c[2] ?? null]);
+  // cumulatieve afstand per punt
+  const cum = [0];
+  for (let i = 1; i < coords.length; i++) cum.push(cum[i-1] + hav(coords[i-1], coords[i]));
+  // ondergrond-secties uit messages
+  const msgs = p.messages || [], h = msgs[0] || [];
+  const iD = h.indexOf('Distance'), iT = h.indexOf('WayTags');
+  const secs = []; let acc = 0, unp = 0;
+  for (let k = 1; k < msgs.length; k++){
+    const d = +msgs[k][iD] || 0, u = isUnpaved(msgs[k][iT]);
+    acc += d; if (u) unp += d; secs.push({end:acc, u});
+  }
+  const total = +p['track-length'] || cum[cum.length-1];
+  // markeer elk segment als (on)verhard o.b.v. positie langs de route
+  const scale = acc ? acc / cum[cum.length-1] : 1; let s = 0;
+  const segU = [];
+  for (let i = 1; i < coords.length; i++){
+    const mid = (cum[i-1] + cum[i]) / 2 * scale;
+    while (s < secs.length - 1 && secs[s].end < mid) s++;
+    segU.push(secs.length ? secs[s].u : false);
+  }
+  return {coords, cum, segU, length:total, ascend:+p['filtered ascend'] || 0,
+          unpavedFrac: acc ? unp/acc : 0, profile, hasElev: coords.some(c => c[2] != null)};
+}
+function offset(ll, distM, bearingDeg){
+  const b = bearingDeg * Math.PI/180;
+  return [ll[0] + distM*Math.cos(b)/111320, ll[1] + distM*Math.sin(b)/(111320*Math.cos(ll[0]*Math.PI/180))];
+}
+function loopPoints(start, r, theta){
+  const c = offset(start, r, theta);
+  const pts = [start];
+  for (let k = 1; k <= 3; k++) pts.push(offset(c, r, theta + 180 + k*90 + (Math.random()*24-12)));
+  pts.push(start);
+  return pts;
+}
+const PROFILES = {
+  paved:   ['trekking','safety','trekking','fastbike'],
+  unpaved: ['hiking-mountain','hiking-mountain','trekking','hiking-mountain'],
+  any:     ['trekking','hiking-mountain','shortest','trekking']
+};
+
+/* ---------- genereren ---------- */
+$('genBtn').onclick = generate;
+async function generate(){
+  if (!state.start) return setStatus('Kies eerst een startpunt (zoek, locatie of klik op de kaart).', true);
+  const D = +$('dist').value, btn = $('genBtn');
+  btn.disabled = true; $('cards').innerHTML = ''; $('warn').innerHTML = '';
+  let profs = PROFILES[state.surface];
+  if (state.activity === 'trail' && state.surface === 'any') profs = ['hiking-mountain','hiking-mountain','trekking','shortest'];
+  const base = Math.random()*360;
+  const cands = profs.map((profile, i) => ({profile, theta: base + i*90}));
+  let done = 0;
+  setStatus(`Rondjes berekenen… (0/${cands.length})`);
+  const run = async c => {
+    let r = D*1000 / (2*Math.PI*1.3);
+    for (let it = 0; it < 3; it++){
+      try {
+        const rt = await brouter(loopPoints(state.start, r, c.theta), c.profile);
+        if (!c.route || Math.abs(rt.length - D*1000) < Math.abs(c.route.length - D*1000)) c.route = rt;
+        const ratio = D*1000 / rt.length;
+        if (Math.abs(ratio - 1) < 0.05) break;
+        r *= Math.max(0.5, Math.min(1.8, ratio));
+      } catch(e){ c.err = e.message; if (!c.route) break; }
+    }
+    setStatus(`Rondjes berekenen… (${++done}/${cands.length})`);
+  };
+  // max 2 tegelijk, om de gratis server te sparen
+  await Promise.all([run(cands[0]).then(() => run(cands[2])), run(cands[1]).then(() => run(cands[3]))]);
+  btn.disabled = false;
+  const ok = cands.filter(c => c.route);
+  if (!ok.length) return setStatus('Geen route gevonden. ' + (cands[0].err || 'Probeer een ander startpunt.'), true);
+  ok.forEach(c => c.score = score(c.route, D));
+  ok.sort((a, b) => a.score - b.score);
+  state.cands = ok.map(c => c.route);
+  setStatus(`${ok.length} opties gevonden — de beste staat bovenaan.`);
+  renderCards(); selectRoute(0);
+  warnings(state.cands[0]);
+}
+function score(rt, D){
+  let s = Math.abs(rt.length/1000 - D) / D * 4;
+  if (state.surface === 'paved')   s += rt.unpavedFrac * 2;
+  if (state.surface === 'unpaved') s += (1 - rt.unpavedFrac) * 2;
+  const a = rt.ascend;
+  if (state.elev === 'no') s += a / (D * 15);
+  else if (state.elevAmt === 'lt100') s += a > 100 ? (a - 100) / 50 : 0;
+  else s += a < 100 ? (100 - a) / 50 : 0;
+  return s;
+}
+function warnings(rt){
+  const w = [];
+  if (state.elev === 'yes' && state.elevAmt === 'gt100' && rt.ascend < 100)
+    w.push(`Meer dan 100 hoogtemeters lukt hier niet binnen deze afstand (max. ${Math.round(rt.ascend)} m gevonden). Probeer een heuvelachtiger startpunt of een langere afstand.`);
+  if (state.surface === 'unpaved' && rt.unpavedFrac < .5)
+    w.push(`Er is in deze omgeving weinig onverhard te vinden (${Math.round(rt.unpavedFrac*100)}%). Start dichter bij bos of natuurgebied.`);
+  if (state.surface === 'paved' && rt.unpavedFrac > .3)
+    w.push(`Dit rondje is voor ${Math.round(rt.unpavedFrac*100)}% onverhard; probeer opnieuw voor een andere variant.`);
+  $('warn').innerHTML = w.map(t => `<div class="warn">${t}</div>`).join('');
+}
+function renderCards(){
+  $('cards').innerHTML = state.cands.map((r, i) => `
+    <div class="card" data-i="${i}">
+      <div><div class="t">${i === 0 ? '★ Beste match' : 'Optie ' + (i+1)}</div>
+      <div class="m">${km(r.length)} · ↑ ${Math.round(r.ascend)} m · ${Math.round(r.unpavedFrac*100)}% onverhard</div></div>
+      <div>›</div></div>`).join('');
+  $('cards').querySelectorAll('.card').forEach(c => c.onclick = () => selectRoute(+c.dataset.i));
+}
+function selectRoute(i){
+  $('cards').querySelectorAll('.card').forEach(c => c.classList.toggle('on', +c.dataset.i === i));
+  showRoute(state.cands[i], true);
+}
+
+/* ---------- route tonen ---------- */
+function showRoute(rt, fit){
+  state.route = rt; routeLayer.clearLayers();
+  if (!rt || rt.coords.length < 2){ $('routeInfo').style.display = 'none'; return; }
+  // casing + gekleurde segmenten
+  L.polyline(rt.coords.map(c => [c[0], c[1]]), {color:'#fff', weight:9, opacity:.9}).addTo(routeLayer);
+  let runStart = 0;
+  for (let i = 1; i <= rt.segU.length; i++){
+    if (i === rt.segU.length || rt.segU[i] !== rt.segU[runStart]){
+      L.polyline(rt.coords.slice(runStart, i+1).map(c => [c[0], c[1]]),
+        {color: rt.segU[runStart] ? '#c47a2c' : '#2b2f3a', weight:5}).addTo(routeLayer);
+      runStart = i;
+    }
+  }
+  // km-markers
+  for (let k = 1000, i = 0; k < rt.cum[rt.cum.length-1]; k += 1000){
+    while (i < rt.cum.length && rt.cum[i] < k) i++;
+    if (i < rt.coords.length) L.marker([rt.coords[i][0], rt.coords[i][1]], {interactive:false, icon:L.divIcon({className:'',
+      iconSize:[18,18], iconAnchor:[9,9], html:`<div style="width:18px;height:18px;border-radius:50%;background:#fff;border:1.5px solid #2b2f3a;font:700 9px Inter;display:flex;align-items:center;justify-content:center">${k/1000}</div>`})}).addTo(routeLayer);
+  }
+  if (fit) map.fitBounds(L.latLngBounds(rt.coords.map(c => [c[0], c[1]])).pad(.1));
+  $('routeInfo').style.display = 'block';
+  renderStats(rt); renderProfile(rt);
+}
+const km = m => (m/1000).toFixed(1).replace('.', ',') + ' km';
+function renderStats(rt){
+  $('sDist').textContent = km(rt.length);
+  $('sAsc').textContent = rt.hasElev ? Math.round(rt.ascend) + ' m' : '–';
+  $('sUnp').textContent = Math.round(rt.unpavedFrac*100) + '%';
+  $('unpBar').style.width = (rt.unpavedFrac*100) + '%';
+  const [m, s] = ($('pace').value.split(':').map(Number));
+  const secPerKm = (m || 0)*60 + (s || 0);
+  if (secPerKm > 0){
+    const t = Math.round(secPerKm * rt.length/1000), hh = Math.floor(t/3600), mm = Math.floor(t%3600/60);
+    $('sTime').textContent = hh ? `${hh}u ${String(mm).padStart(2,'0')}m` : `${mm} min`;
+  } else $('sTime').textContent = '–';
+}
+function renderProfile(rt){
+  const svg = $('prof');
+  const pts = rt.coords.map((c, i) => [rt.cum[i], c[2]]).filter(p => p[1] != null);
+  if (pts.length < 2){ svg.innerHTML = '<text x="150" y="50" text-anchor="middle" font-size="11" fill="#6b7280">Geen hoogtedata</text>'; return; }
+  const maxX = pts[pts.length-1][0], ys = pts.map(p => p[1]);
+  let lo = Math.min(...ys), hi = Math.max(...ys); if (hi - lo < 20){ const m = (hi+lo)/2; lo = m-10; hi = m+10; }
+  const X = x => x/maxX*300, Y = y => 82 - (y-lo)/(hi-lo)*70;
+  const line = pts.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1)).join('');
+  svg.innerHTML = `<path d="${line}L300,90L0,90Z" fill="#e4572e" fill-opacity=".18"/>
+    <path d="${line}" fill="none" stroke="#e4572e" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+    <text x="4" y="12" font-size="9" fill="#6b7280">${Math.round(hi)} m</text>
+    <text x="4" y="86" font-size="9" fill="#6b7280">${Math.round(lo)} m</text>`;
+}
+
+/* ---------- zelf tekenen (afstandmeten) ---------- */
+let drawTimer;
+function addDrawPoint(ll){
+  state.drawPts.push([ll.lat, ll.lng]);
+  L.marker(ll, {icon: pin(state.drawPts.length === 1 ? '#e4572e' : '#2b2f3a', state.drawPts.length === 1 ? 18 : 12)}).addTo(drawMarkers);
+  scheduleDraw();
+}
+$('undoBtn').onclick = () => { state.drawPts.pop(); const ls = drawMarkers.getLayers(); if (ls.length) drawMarkers.removeLayer(ls[ls.length-1]); scheduleDraw(); };
+$('clearBtn').onclick = () => { state.drawPts = []; drawMarkers.clearLayers(); showRoute(null); };
+$('snap').onchange = $('loopBack').onchange = scheduleDraw;
+function scheduleDraw(){ clearTimeout(drawTimer); drawTimer = setTimeout(updateDraw, 250); }
+async function updateDraw(){
+  let pts = state.drawPts.slice();
+  if ($('loopBack').checked && pts.length > 1) pts.push(pts[0]);
+  if (pts.length < 2){ showRoute(null); $('drawStatus').textContent = ''; return; }
+  if (!$('snap').checked){
+    const coords = pts.map(p => [p[0], p[1], null]), cum = [0];
+    for (let i = 1; i < coords.length; i++) cum.push(cum[i-1] + hav(coords[i-1], coords[i]));
+    showRoute({coords, cum, segU: coords.slice(1).map(() => false), length: cum[cum.length-1], ascend:0, unpavedFrac:0, hasElev:false});
+    $('drawStatus').textContent = 'Hemelsbreed gemeten.'; return;
+  }
+  $('drawStatus').textContent = 'Route berekenen…';
+  try{
+    const rt = await brouter(pts, state.activity === 'trail' ? 'hiking-mountain' : 'trekking');
+    showRoute(rt); $('drawStatus').textContent = '';
+  } catch(e){ $('drawStatus').textContent = 'Kon geen route berekenen: ' + e.message; }
+}
+
+/* ---------- GPX & opslaan ---------- */
+function toGPX(rt, name){
+  const esc = s => s.replace(/[<&>]/g, c => ({'<':'&lt;','&':'&amp;','>':'&gt;'}[c]));
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Rondje" xmlns="http://www.topografix.com/GPX/1/1">
+<metadata><name>${esc(name)}</name></metadata>
+<trk><name>${esc(name)}</name><type>running</type><trkseg>
+${rt.coords.map(c => `<trkpt lat="${c[0].toFixed(6)}" lon="${c[1].toFixed(6)}">${c[2] != null ? `<ele>${(+c[2]).toFixed(1)}</ele>` : ''}</trkpt>`).join('\n')}
+</trkseg></trk></gpx>`;
+}
+function routeName(rt){
+  return `Rondje ${km(rt.length)} ${state.activity === 'trail' ? 'trail' : 'road'}`;
+}
+$('gpxBtn').onclick = () => {
+  const rt = state.route; if (!rt) return;
+  const name = routeName(rt);
+  const blob = new Blob([toGPX(rt, name)], {type:'application/gpx+xml'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name.replace(/[^\w,-]+/g, '_') + '.gpx';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+};
+const KEY = 'rondje.routes';
+function loadSaved(){ try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch(e){ return []; } }
+function storeSaved(list){ try { localStorage.setItem(KEY, JSON.stringify(list)); return true; } catch(e){ return false; } }
+$('saveBtn').onclick = () => {
+  const rt = state.route; if (!rt) return;
+  const list = loadSaved();
+  list.unshift({id: Date.now(), name: routeName(rt), date: new Date().toLocaleDateString('nl-NL'),
+    rt: {...rt, coords: rt.coords.map(c => [+c[0].toFixed(6), +c[1].toFixed(6), c[2] == null ? null : Math.round(c[2]*10)/10])}});
+  $('saveBtn').textContent = storeSaved(list) ? '★ Opgeslagen' : 'Opslaan mislukt';
+  setTimeout(() => $('saveBtn').textContent = '☆ Opslaan', 1800);
+};
+function renderSaved(){
+  const list = loadSaved();
+  $('savedList').innerHTML = list.length ? list.map(r => `
+    <div class="card" data-id="${r.id}">
+      <div><div class="t">${r.name}</div>
+      <div class="m">${r.date} · ↑ ${Math.round(r.rt.ascend)} m · ${Math.round(r.rt.unpavedFrac*100)}% onverhard</div></div>
+      <button data-del="${r.id}" title="Verwijderen">✕</button></div>`).join('')
+    : '<div class="hint">Nog geen opgeslagen routes. Genereer of teken een rondje en klik op Opslaan.</div>';
+  $('savedList').querySelectorAll('.card').forEach(c => c.onclick = e => {
+    const id = +c.dataset.id;
+    if (e.target.dataset.del){ storeSaved(loadSaved().filter(r => r.id !== id)); renderSaved(); showRoute(null); return; }
+    $('savedList').querySelectorAll('.card').forEach(x => x.classList.toggle('on', x === c));
+    showRoute(loadSaved().find(r => r.id === id).rt, true);
+  });
+}
+</script>
+</body>
+</html>
