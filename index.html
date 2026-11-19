@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>Rondje<span>.</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v5</span></div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v6</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -420,13 +420,13 @@ async function generate(){
   const tol = 0.10;                                              // max. 10% afwijking van de gewenste afstand
   const within = rt => Math.abs(rt.length - D*1000) <= tol*D*1000;
   const run = async c => {
-    let scale = 1, errs = 0;
-    for (let it = 0; it < 4; it++){
+    let scale = state.scaleHint || 1, errs = 0;                   // begin met wat eerdere rondjes hier leerden
+    for (let it = 0; it < 3; it++){
       try {
         const rt = await brouter(shapePoints(state.start, D*1000, c.shape, scale), c.profile);
         if (!c.route || Math.abs(rt.length - D*1000) < Math.abs(c.route.length - D*1000)) c.route = rt;
         const ratio = D*1000 / rt.length;
-        if (Math.abs(ratio - 1) < 0.04) break;
+        if (Math.abs(ratio - 1) < 0.07){ state.scaleHint = ((state.scaleHint || scale) + scale) / 2; break; }
         scale *= Math.max(0.4, Math.min(2, ratio));
       } catch(e){
         c.err = e.message;
@@ -434,15 +434,37 @@ async function generate(){
           delete profileCache[state.surface + '|' + state.elev];
           c.profile = fallback[0]; it--; continue;
         }
-        if (++errs <= 2){ await sleep(1500); it--; continue; }   // server druk: even wachten en opnieuw
+        if (++errs <= 2){ await sleep(1200); it--; continue; }   // server druk: even wachten en opnieuw
         break;
       }
     }
   };
-  // in rondes rekenen tot er genoeg rondjes binnen de afstand zijn
+  // toon de beste rondjes tot nu toe; wordt na elke ronde opnieuw aangeroepen
   const all = [];
+  const present = final => {
+    all.forEach(rt => { if (!rt.cells) analyse(rt); rt.score = score(rt, D); });
+    let pool = all.filter(within);
+    const offDist = !pool.length;
+    if (offDist && !final) return;
+    if (offDist) pool = all.slice().sort((a, b) => Math.abs(a.length - D*1000) - Math.abs(b.length - D*1000)).slice(0, 2);
+    pool.sort((a, b) => a.score - b.score);
+    const pick = [];                                             // geen bijna-dubbele opties
+    for (const rt of pool){ if (pick.length < N_SHOW && pick.every(p => overlap(rt, p) < 0.6)) pick.push(rt); }
+    for (const rt of pool){ if (pick.length < N_SHOW && !pick.includes(rt)) pick.push(rt); }
+    const cur = state.userPicked ? state.route : null;           // bekijkt de gebruiker al een rondje? laat dat staan
+    if (cur && !pick.includes(cur)) pick[pick.length < N_SHOW ? pick.length : N_SHOW - 1] = cur;
+    state.cands = pick; renderCards();
+    if (cur) $('cards').querySelectorAll('.card').forEach(c => c.classList.toggle('on', pick[+c.dataset.i] === cur));
+    else selectRoute(0);
+    if (final){
+      state.seen.push(...pick);
+      setStatus(offDist ? `Geen rondje binnen ${Math.round(tol*100)}% van ${D} km gevonden; dit zijn de dichtstbijzijnde.`
+                        : `${pick.length} rondjes tussen ${km(D*1000*(1-tol))} en ${km(D*1000*(1+tol))} — de beste staat bovenaan.`, offDist);
+    }
+  };
+  state.userPicked = false;
   for (let round = 0; round < 3; round++){
-    const n = round === 0 ? N_CANDS : 6, base = Math.random()*360;
+    const n = round === 0 ? 6 : 4, base = Math.random()*360;
     // vanaf ronde 2: zoek gericht in de richtingen waar de ondergrond het best paste (bv. richting het bos)
     let dirs = null;
     if (round > 0 && state.surface !== 'any' && all.length){
@@ -456,31 +478,19 @@ async function generate(){
       shape: randomShape(dirs ? dirs[i % dirs.length] + Math.random()*60 - 30
                               : base + i*(360/n) + Math.random()*30 - 15)}));
     let done = 0;
-    const queue = cands.slice();
-    setStatus(`Rondjes bedenken… ${round ? '(extra ronde) ' : ''}0/${n}`);
-    await Promise.all([0,1].map(async () => { while (queue.length){ await run(queue.shift());
-      setStatus(`Rondjes bedenken… ${round ? '(extra ronde) ' : ''}${++done}/${n}`); } }));
+    const queue = cands.slice(), label = round ? 'Nog betere rondjes zoeken…' : 'Rondjes bedenken…';
+    setStatus(`${label} 0/${n}`);
+    await Promise.all([0,1,2,3].map(async () => { while (queue.length){ await run(queue.shift());
+      setStatus(`${label} ${++done}/${n}`); } }));
     cands.forEach(c => { if (c.route){ c.route.theta = c.shape.theta; all.push(c.route); } });
     const good = all.filter(within), bestMatch = Math.max(0, ...good.map(surfMatch));
-    if (good.length >= N_SHOW + 1 && (round >= 1 || state.surface === 'any' || bestMatch >= 0.8)) break;
+    // alleen doorzoeken als er te weinig rondjes zijn of de ondergrond nog slecht past
+    if (good.length >= 3 && (state.surface === 'any' || bestMatch >= 0.6 || round >= 1)) break;
+    present(false);
   }
-  btn.disabled = false;
+  btn.disabled = false; btn.textContent = 'Bedenk andere rondjes';
   if (!all.length) return setStatus('Geen route gevonden. Probeer een ander startpunt of probeer het zo nog eens.', true);
-  all.forEach(rt => { analyse(rt); rt.score = score(rt, D); });
-  let pool = all.filter(within);
-  const offDist = !pool.length;
-  if (offDist) pool = all.slice().sort((a, b) => Math.abs(a.length - D*1000) - Math.abs(b.length - D*1000)).slice(0, 2);
-  pool.sort((a, b) => a.score - b.score);
-  // kies verschillende rondjes: geen bijna-dubbele opties
-  const pick = [];
-  for (const rt of pool){ if (pick.length < N_SHOW && pick.every(p => overlap(rt, p) < 0.6)) pick.push(rt); }
-  for (const rt of pool){ if (pick.length < N_SHOW && !pick.includes(rt)) pick.push(rt); }
-  state.cands = pick; state.seen.push(...pick);
-  btn.textContent = 'Bedenk andere rondjes';
-  setStatus(offDist ? `Geen rondje binnen ${Math.round(tol*100)}% van ${D} km gevonden; dit zijn de dichtstbijzijnde.`
-                    : `${pick.length} rondjes tussen ${km(D*1000*(1-tol))} en ${km(D*1000*(1+tol))} — de beste staat bovenaan.`, offDist);
-  renderCards(); selectRoute(0);
-  warnings(state.cands[0]);
+  present(true);
 }
 function surfMatch(rt){
   return state.surface === 'unpaved' ? rt.unpavedFrac : state.surface === 'paved' ? 1 - rt.unpavedFrac : 1;
@@ -513,7 +523,7 @@ function renderCards(){
       <div><div class="t">${i === 0 ? '★ Beste match' : 'Optie ' + (i+1)}</div>
       <div class="m">${km(r.length)} · ↑ ${Math.round(r.ascend)} m · ${Math.round(r.unpavedFrac*100)}% onverhard</div></div>
       <div>›</div></div>`).join('');
-  $('cards').querySelectorAll('.card').forEach(c => c.onclick = () => selectRoute(+c.dataset.i));
+  $('cards').querySelectorAll('.card').forEach(c => c.onclick = () => { state.userPicked = true; selectRoute(+c.dataset.i); });
 }
 function selectRoute(i){
   $('cards').querySelectorAll('.card').forEach(c => c.classList.toggle('on', +c.dataset.i === i));
