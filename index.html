@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Rondje — routeplanner voor hardlopers</title>
+<title>rondjerennen.nl — routeplanner voor hardlopers</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-  :root{--ink:#16181d;--muted:#6b7280;--line:#e5e7eb;--bg:#f6f6f4;--acc:#e4572e;--acc2:#b8401f;--paved:#2b2f3a;--unpaved:#c47a2c;}
+  :root{--ink:#16181d;--muted:#6b7280;--line:#e5e7eb;--bg:#f6f6f4;--acc:#0e7490;--acc2:#155e75;--paved:#2b2f3a;--unpaved:#c47a2c;}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;font-family:Inter,system-ui,sans-serif;color:var(--ink);background:var(--bg)}
   #app{display:grid;grid-template-columns:380px 1fr;height:100vh}
   #panel{overflow-y:auto;background:#fff;border-right:1px solid var(--line);padding:20px 20px 40px}
   #map{height:100%}
-  h1{font-size:24px;font-weight:800;margin:0;letter-spacing:-.02em}
+  h1{font-size:23px;font-weight:800;margin:0;letter-spacing:-.02em}
   h1 span{color:var(--acc)}
   .sub{color:var(--muted);font-size:13px;margin:2px 0 16px}
   .tabs{display:flex;gap:4px;background:var(--bg);padding:4px;border-radius:10px;margin-bottom:18px}
@@ -23,7 +23,7 @@
   label.h{display:block;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:16px 0 6px}
   .seg{display:flex;gap:6px;flex-wrap:wrap}
   .seg button{flex:1;min-width:80px;border:1.5px solid var(--line);background:#fff;padding:9px 6px;border-radius:9px;font:600 13px Inter;cursor:pointer;color:var(--ink)}
-  .seg button.on{border-color:var(--acc);background:#fdf0ec;color:var(--acc2)}
+  .seg button.on{border-color:var(--acc);background:#e6f4f7;color:var(--acc2)}
   .row{display:flex;gap:6px}
   input[type=text],input[type=number]{width:100%;border:1.5px solid var(--line);border-radius:9px;padding:9px 10px;font:500 14px Inter}
   input[type=range]{width:100%;accent-color:var(--acc)}
@@ -40,7 +40,7 @@
   .warn{background:#fff7e6;border:1px solid #f5d38a;color:#7a5200;font-size:12.5px;padding:8px 10px;border-radius:8px;margin-top:10px}
   .cards{display:flex;flex-direction:column;gap:8px;margin-top:14px}
   .card{border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:13px}
-  .card.on{border-color:var(--acc);background:#fdf0ec}
+  .card.on{border-color:var(--acc);background:#e6f4f7}
   .card .t{font-weight:700}
   .card .m{color:var(--muted);font-size:12px}
   #routeInfo{margin-top:22px;border-top:1px solid var(--line);padding-top:16px;display:none}
@@ -73,8 +73,8 @@
 <body>
 <div id="app">
   <aside id="panel">
-    <h1>Rondje<span>.</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v7</span></div>
+    <h1>rondjerennen<span>.nl</span></h1>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v8</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -205,7 +205,7 @@ $('pace').oninput = () => state.route && renderStats(state.route);
 function setStart(ll, fly){
   state.start = [ll.lat ?? ll[0], ll.lng ?? ll[1]];
   if (!startMarker){
-    startMarker = L.marker(state.start, {draggable:true, icon:pin('#e4572e')}).addTo(map);
+    startMarker = L.marker(state.start, {draggable:true, icon:pin('#0e7490')}).addTo(map);
     startMarker.on('dragend', e => setStart(e.target.getLatLng()));
   } else startMarker.setLatLng(state.start);
   $('startHint').textContent = `Start: ${state.start[0].toFixed(4)}, ${state.start[1].toFixed(4)}`;
@@ -301,23 +301,28 @@ async function brouter(points, surface, elev){
       coords.push([p[0], p[1], el.length ? el[Math.min(el.length-1, Math.round(d/iv))] : null]);
     });
   }
-  const cum = [0];
-  for (let i = 1; i < coords.length; i++) cum.push(cum[i-1] + hav(coords[i-1], coords[i]));
-  // ondergrond per stuk weg ophalen
-  const secs = []; let acc = 0;
+  const rt = finishRoute(trimSpurs(coords, coords.slice(1).map(() => false)), null);
+  rt.co = co; rt.surfKnown = false;
+  return rt;
+}
+// ondergrond per stuk weg ophalen (apart verzoek, alleen voor rondjes die we gaan tonen)
+async function addSurface(rt){
+  if (rt.surfKnown) return rt;
+  const {coords, cum} = rt, secs = []; let acc = 0;
   try {
-    const a = await vpost('/trace_attributes', {shape: coords.map(c => ({lat: c[0], lon: c[1]})), costing:'pedestrian', costing_options: co,
+    const a = await vpost('/trace_attributes', {shape: coords.map(c => ({lat: c[0], lon: c[1]})), costing:'pedestrian', costing_options: rt.co,
       shape_match:'map_snap', filters:{attributes:['edge.surface','edge.length'], action:'include'}});
     for (const e of a.edges || []){ acc += e.length*1000; secs.push({end: acc, u: V_UNPAVED.has(e.surface)}); }
-  } catch(e){ console.warn('Ondergrond onbekend:', e.message); }
-  const scale = acc ? acc / cum[cum.length-1] : 1; let s = 0;
-  const segU = [];
+  } catch(e){ console.warn('Ondergrond onbekend:', e.message); return rt; }
+  const scale = acc ? acc / cum[cum.length-1] : 1; let k = 0, unp = 0;
   for (let i = 1; i < coords.length; i++){
     const mid = (cum[i-1] + cum[i]) / 2 * scale;
-    while (s < secs.length - 1 && secs[s].end < mid) s++;
-    segU.push(secs.length ? secs[s].u : false);
+    while (k < secs.length - 1 && secs[k].end < mid) k++;
+    rt.segU[i-1] = secs.length ? secs[k].u : false;
+    if (rt.segU[i-1]) unp += cum[i] - cum[i-1];
   }
-  return finishRoute(trimSpurs(coords, segU), null);
+  rt.unpavedFrac = rt.length ? unp / rt.length : 0; rt.surfKnown = true;
+  return rt;
 }
 // knip doodlopende heen-en-terug-stukjes weg
 function trimSpurs(coords, segU){
@@ -409,45 +414,48 @@ async function generate(){
         const rt = await brouter(shapePoints(state.start, D*1000, c.shape, scale), state.surface, state.elev);
         if (!c.route || Math.abs(rt.length - D*1000) < Math.abs(c.route.length - D*1000)) c.route = rt;
         const ratio = D*1000 / rt.length;
-        if (Math.abs(ratio - 1) < 0.07){ state.scaleHint = ((state.scaleHint || scale) + scale) / 2; break; }
+        if (Math.abs(ratio - 1) < 0.08){ state.scaleHint = ((state.scaleHint || scale) + scale) / 2; break; }
         scale *= Math.max(0.4, Math.min(2, ratio));
       } catch(e){
         c.err = e.message;
-        if (++errs <= 2){ await sleep(1200); it--; continue; }   // server druk: even wachten en opnieuw
+        if (++errs <= 1){ await sleep(1200); it--; continue; }   // server druk: even wachten en opnieuw
         break;
       }
     }
+    if (c.route && within(c.route)){ await addSurface(c.route); c.route.theta = c.shape.theta; all.push(c.route); present(false); }
+    else if (c.route){ c.route.theta = c.shape.theta; far.push(c.route); }
   };
   // toon de beste rondjes tot nu toe; wordt na elke ronde opnieuw aangeroepen
-  const all = [];
+  const all = [], far = [];                                      // binnen / buiten de afstandsmarge
   const present = final => {
     all.forEach(rt => { if (!rt.cells) analyse(rt); rt.score = score(rt, D); });
-    let pool = all.filter(within);
+    let pool = all.slice();
     const offDist = !pool.length;
     if (offDist && !final) return;
-    if (offDist) pool = all.slice().sort((a, b) => Math.abs(a.length - D*1000) - Math.abs(b.length - D*1000)).slice(0, 2);
+    if (offDist) pool = far.slice(0, 2);
+    pool.forEach(rt => { if (!rt.cells) analyse(rt); rt.score = score(rt, D); });
     pool.sort((a, b) => a.score - b.score);
     const pick = [];                                             // geen bijna-dubbele opties
     for (const rt of pool){ if (pick.length < N_SHOW && pick.every(p => overlap(rt, p) < 0.6)) pick.push(rt); }
     for (const rt of pool){ if (pick.length < N_SHOW && !pick.includes(rt)) pick.push(rt); }
-    const cur = state.userPicked ? state.route : null;           // bekijkt de gebruiker al een rondje? laat dat staan
+    const cur = (state.userPicked || shown) ? state.route : null; // staat er al een rondje in beeld? laat dat staan
     if (cur && !pick.includes(cur)) pick[pick.length < N_SHOW ? pick.length : N_SHOW - 1] = cur;
     state.cands = pick; renderCards();
     if (cur) $('cards').querySelectorAll('.card').forEach(c => c.classList.toggle('on', pick[+c.dataset.i] === cur));
-    else selectRoute(0);
+    else { selectRoute(0); shown = true; }
     if (final){
       state.seen.push(...pick);
       setStatus(offDist ? `Geen rondje binnen ${Math.round(tol*100)}% van ${D} km gevonden; dit zijn de dichtstbijzijnde.`
                         : `${pick.length} rondjes tussen ${km(D*1000*(1-tol))} en ${km(D*1000*(1+tol))} — de beste staat bovenaan.`, offDist);
     }
   };
-  state.userPicked = false;
+  state.userPicked = false; let shown = false;
   for (let round = 0; round < 3; round++){
-    const n = round === 0 ? 8 : 6, base = Math.random()*360;
+    const n = round === 0 ? 5 : 4, base = Math.random()*360;
     // vanaf ronde 2: zoek gericht in de richtingen waar de ondergrond het best paste (bv. richting het bos)
     let dirs = null;
-    if (round > 0 && state.surface !== 'any' && all.length){
-      const best = all.slice().sort((a, b) => surfMatch(b) - surfMatch(a));
+    if (round > 0 && state.surface !== 'any' && all.length){ // far heeft nog geen ondergrond
+      const best = all.concat(far.filter(r => r.surfKnown)).sort((a, b) => surfMatch(b) - surfMatch(a));
       dirs = [best[0].theta];
       const second = best.find(r => Math.abs(((r.theta - dirs[0]) % 360 + 540) % 360 - 180) > 40);
       if (second) dirs.push(second.theta);
@@ -458,16 +466,18 @@ async function generate(){
     let done = 0;
     const queue = cands.slice(), label = round ? 'Nog betere rondjes zoeken…' : 'Rondjes bedenken…';
     setStatus(`${label} 0/${n}`);
-    await Promise.all([0,1,2].map(async () => { while (queue.length){ await run(queue.shift());
+    await Promise.all([0,1].map(async () => { while (queue.length){ await run(queue.shift());
       setStatus(`${label} ${++done}/${n}`); } }));
-    cands.forEach(c => { if (c.route){ c.route.theta = c.shape.theta; all.push(c.route); } });
-    const good = all.filter(within), bestMatch = Math.max(0, ...good.map(surfMatch));
+    const bestMatch = Math.max(0, ...all.map(surfMatch));
     // alleen doorzoeken als er te weinig rondjes zijn of de ondergrond nog slecht past
-    if (good.length >= 3 && (state.surface === 'any' || bestMatch >= 0.6 || round >= 1)) break;
-    present(false);
+    if (all.length >= 3 && (state.surface === 'any' || bestMatch >= 0.5 || round >= 1)) break;
+  }
+  if (!all.length && far.length){                                // niets binnen de marge: toon de dichtstbijzijnde
+    far.sort((a, b) => Math.abs(a.length - D*1000) - Math.abs(b.length - D*1000));
+    for (const rt of far.slice(0, 2)) await addSurface(rt);
   }
   btn.disabled = false; btn.textContent = 'Bedenk andere rondjes';
-  if (!all.length) return setStatus('Geen route gevonden. Probeer een ander startpunt of probeer het zo nog eens.', true);
+  if (!all.length && !far.length) return setStatus('Geen route gevonden. Probeer een ander startpunt of probeer het zo nog eens.', true);
   present(true);
 }
 function surfMatch(rt){
@@ -554,17 +564,17 @@ function renderProfile(rt){
   let lo = Math.min(...ys), hi = Math.max(...ys); if (hi - lo < 20){ const m = (hi+lo)/2; lo = m-10; hi = m+10; }
   const X = x => x/maxX*300, Y = y => 82 - (y-lo)/(hi-lo)*70;
   const line = pts.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1)).join('');
-  svg.innerHTML = `<path d="${line}L300,90L0,90Z" fill="#e4572e" fill-opacity=".18"/>
-    <path d="${line}" fill="none" stroke="#e4572e" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+  svg.innerHTML = `<path d="${line}L300,90L0,90Z" fill="#0e7490" fill-opacity=".18"/>
+    <path d="${line}" fill="none" stroke="#0e7490" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
     <text x="4" y="12" font-size="9" fill="#6b7280">${Math.round(hi)} m</text>
     <text x="4" y="86" font-size="9" fill="#6b7280">${Math.round(lo)} m</text>`;
 }
 
 /* ---------- zelf tekenen (afstandmeten) ---------- */
-let drawTimer;
+let drawTimer, drawSeq = 0;
 function addDrawPoint(ll){
   state.drawPts.push([ll.lat, ll.lng]);
-  L.marker(ll, {icon: pin(state.drawPts.length === 1 ? '#e4572e' : '#2b2f3a', state.drawPts.length === 1 ? 18 : 12)}).addTo(drawMarkers);
+  L.marker(ll, {icon: pin(state.drawPts.length === 1 ? '#0e7490' : '#2b2f3a', state.drawPts.length === 1 ? 18 : 12)}).addTo(drawMarkers);
   scheduleDraw();
 }
 $('undoBtn').onclick = () => { state.drawPts.pop(); const ls = drawMarkers.getLayers(); if (ls.length) drawMarkers.removeLayer(ls[ls.length-1]); scheduleDraw(); };
@@ -583,8 +593,12 @@ async function updateDraw(){
   }
   $('drawStatus').textContent = 'Route berekenen…';
   try{
+    const seq = ++drawSeq;
     const rt = await brouter(pts, state.activity === 'trail' ? 'unpaved' : 'any', 'yes');
+    if (seq !== drawSeq) return;                                 // er is alweer verder geklikt
     showRoute(rt); $('drawStatus').textContent = '';
+    await addSurface(rt);
+    if (seq === drawSeq) showRoute(rt);
   } catch(e){ $('drawStatus').textContent = 'Kon geen route berekenen: ' + e.message; }
 }
 
@@ -592,7 +606,7 @@ async function updateDraw(){
 function toGPX(rt, name){
   const esc = s => s.replace(/[<&>]/g, c => ({'<':'&lt;','&':'&amp;','>':'&gt;'}[c]));
   return `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="Rondje" xmlns="http://www.topografix.com/GPX/1/1">
+<gpx version="1.1" creator="rondjerennen.nl" xmlns="http://www.topografix.com/GPX/1/1">
 <metadata><name>${esc(name)}</name></metadata>
 <trk><name>${esc(name)}</name><type>running</type><trkseg>
 ${rt.coords.map(c => `<trkpt lat="${c[0].toFixed(6)}" lon="${c[1].toFixed(6)}">${c[2] != null ? `<ele>${(+c[2]).toFixed(1)}</ele>` : ''}</trkpt>`).join('\n')}
