@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>rondjerennen<span>.nl</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v14</span></div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v15</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -466,7 +466,7 @@ async function generate(){
   };
   // tussenpunten op een bekend onverhard pad leggen als er een in de buurt is
   const snap = p => {
-    const near = spots.filter(q => hav(p, q) < target/10);
+    const near = spots.filter(q => hav(p, q) < target/7);
     return near.length ? near[Math.floor(Math.random()*near.length)] : p;
   };
   const harvest = rt => {
@@ -509,12 +509,23 @@ async function generate(){
       if (m[N_SHOW-1] >= 0.8 * m[0]) stop = true;
     }
   };
-  const worker = async () => { while (!stop && made < maxCands){ const i = made++; await tryCand(randomShape(thetaFor(i))); } };
+  const worker = async () => { while (!stop && made < maxCands){
+    const i = made++, shape = randomShape(thetaFor(i));
+    if (unp && i >= 3 && spots.length >= 15) shape.elong = 1.5 + Math.random()*0.5;   // langgerekt: verder het bos in
+    await tryCand(shape);
+  } };
   await Promise.all([worker(), worker()]);
   if (state.runId !== runId) return;
   // aanvullen met reserves; als niets binnen de marge viel: de dichtstbijzijnde
   spare.sort((a, b) => strict ? surfMatch(b) - surfMatch(a) : a.reuseFrac - b.reuseFrac);
-  for (const rt of spare) if (pool.length < N_SHOW) pool.push(rt);
+  // reserves alleen als ze niet lelijk zijn (veel dubbel) en niet bijna hetzelfde als een ander rondje
+  for (const rt of spare) if (pool.length < N_SHOW && rt.reuseFrac <= 0.25 && pool.every(p => overlap(rt, p) <= 0.6)) pool.push(rt);
+  if (!pool.length && spare.length) pool.push(spare[0]);
+  // onverhard gevraagd: rondjes die ver achterblijven bij de beste laten we weg (liever 2 goede dan 3 met een slechte)
+  if (strict && pool.length > 1){
+    const bestM = Math.max(...pool.map(surfMatch));
+    for (let k = pool.length - 1; k >= 0; k--) if (surfMatch(pool[k]) < 0.6 * bestM) pool.splice(k, 1);
+  }
   const offDist = !pool.length;
   if (offDist){ far.sort((a, b) => Math.abs(a.length - target) - Math.abs(b.length - target)); far.slice(0, 2).forEach(rt => { analyse(rt); pool.push(rt); }); }
   btn.disabled = false;
