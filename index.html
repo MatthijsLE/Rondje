@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>rondjerennen<span>.nl</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v16</span></div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v17</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -129,7 +129,7 @@
 
     <!-- ZELF TEKENEN -->
     <section id="tab-draw" class="hidden">
-      <div class="hint" style="font-size:13px;margin-top:0">Klik op de kaart om punten toe te voegen. De afstand wordt direct gemeten.</div>
+      <div class="hint" style="font-size:13px;margin-top:0">Klik op de kaart om punten toe te voegen (maximaal 100). De afstand wordt direct gemeten.</div>
       <label class="chk"><input type="checkbox" id="snap" checked> Volg wegen en paden</label>
       <label class="chk"><input type="checkbox" id="loopBack"> Terug naar startpunt</label>
       <div class="actions">
@@ -289,9 +289,9 @@ async function vpost(path, body){
     return j;
   } finally { clearTimeout(timer); }
 }
-async function brouter(points, surface, elev){
+async function brouter(points, surface, elev, manual){           // manual = zelf getekend: niets wegknippen
   const co = costing(surface, elev);
-  const locations = points.map((p, i) => ({lat: p[0], lon: p[1], type: (i === 0 || i === points.length-1) ? 'break' : 'through'}));
+  const locations = points.map((p, i) => ({lat: p[0], lon: p[1], type: (manual || i === 0 || i === points.length-1) ? 'break' : 'through'}));
   const j = await vpost('/route', {locations, costing:'pedestrian', costing_options: co, elevation_interval: 30, directions_type:'none'});
   const coords = [];
   for (const leg of j.trip.legs){
@@ -301,7 +301,8 @@ async function brouter(points, surface, elev){
       coords.push([p[0], p[1], el.length ? el[Math.min(el.length-1, Math.round(d/iv))] : null]);
     });
   }
-  const clean = trimLoops(trimSpurs(coords, coords.slice(1).map(() => false)).coords);
+  const clean = manual ? coords.filter((c, i) => !i || hav(c, coords[i-1]) > 0.5)
+                       : trimLoops(trimSpurs(coords, coords.slice(1).map(() => false)).coords);
   const rt = finishRoute({coords: clean, segU: clean.slice(1).map(() => false)}, null);
   rt.co = co; rt.surfKnown = false;
   return rt;
@@ -647,6 +648,7 @@ function renderProfile(rt){
 /* ---------- zelf tekenen (afstandmeten) ---------- */
 let drawTimer, drawSeq = 0;
 function addDrawPoint(ll){
+  if (state.drawPts.length >= MAX_DRAW){ $('drawStatus').textContent = `Maximaal ${MAX_DRAW} punten per route.`; return; }
   state.drawPts.push([ll.lat, ll.lng]);
   L.marker(ll, {icon: pin(state.drawPts.length === 1 ? '#24523f' : '#2b2f3a', state.drawPts.length === 1 ? 18 : 12)}).addTo(drawMarkers);
   scheduleDraw();
@@ -668,12 +670,27 @@ async function updateDraw(){
   $('drawStatus').textContent = 'Route berekenen…';
   try{
     const seq = ++drawSeq;
-    const rt = await brouter(pts, state.activity === 'trail' ? 'unpaved' : 'any', 'yes');
+    const rt = await routeManual(pts, state.activity === 'trail' ? 'unpaved' : 'any', 'yes');
     if (seq !== drawSeq) return;                                 // er is alweer verder geklikt
-    showRoute(rt); $('drawStatus').textContent = '';
+    showRoute(rt); $('drawStatus').textContent = `${state.drawPts.length} van ${MAX_DRAW} punten`;
     await addSurface(rt);
     if (seq === drawSeq) showRoute(rt);
   } catch(e){ $('drawStatus').textContent = 'Kon geen route berekenen: ' + e.message; }
+}
+
+// zelf getekende route: tot 100 punten, in stukken van 8 berekend; eerdere stukken worden onthouden
+const MAX_DRAW = 100, partCache = new Map();
+async function routeManual(points, surface, elev){
+  const coords = [];
+  for (let i = 0; i < points.length - 1; i += 7){
+    const part = points.slice(i, i + 8), key = surface + '|' + elev + '|' + part.map(p => p[0].toFixed(6) + ',' + p[1].toFixed(6)).join(';');
+    let rt = partCache.get(key);
+    if (!rt){ rt = await brouter(part, surface, elev, true); partCache.set(key, rt); if (partCache.size > 60) partCache.delete(partCache.keys().next().value); }
+    coords.push(...(coords.length ? rt.coords.slice(1) : rt.coords));
+  }
+  const out = finishRoute({coords, segU: coords.slice(1).map(() => false)}, null);
+  out.co = costing(surface, elev); out.surfKnown = false;
+  return out;
 }
 
 /* ---------- GPX & opslaan ---------- */
