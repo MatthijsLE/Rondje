@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>rondjerennen<span>.nl</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v19</span></div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v20</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -891,6 +891,7 @@ function renderSaved(){
   });
 }
 loadShared();
+window.addEventListener('hashchange', loadShared);
 </script>
 </body>
 </html>
