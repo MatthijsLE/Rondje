@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>rondjerennen<span>.nl</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v18</span></div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v19</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -822,16 +822,19 @@ async function extendRoute(extraKm){
       await addSurface(r); if (state.route === r) showRoute(r, false);
     });
   };
-  for (const f of [0.5, 0.25, 0.75]){
+  // op drie plekken proberen, eerst naar buiten en dan naar binnen; stoppen bij drie goede varianten
+  const tries = []; for (const side of [0, 180]) for (const f of [0.5, 0.25, 0.75]) tries.push([f, side]);
+  for (const [f, side] of tries){
+    if (variants.length >= 3) break;
     st.textContent = `Omweg zoeken… (${variants.length} gevonden)`;
     let h = X / 2.6;                                             // hoe ver de omweg van de route af gaat
     const w = Math.min(Math.max(250, h/2), total*0.12), s = f*total;
     const iA = indexAt(base, s - w), iB = indexAt(base, s + w);
     if (iA < 1 || iB >= base.coords.length - 1 || iB <= iA) continue;
     const A = base.coords[iA], B = base.coords[iB], mid = base.coords[indexAt(base, s)];
-    const out = bearing([cLat, cLon], mid);                      // naar buiten, weg van het midden van het rondje
+    const out = bearing([cLat, cLon], mid) + side;               // weg van (of naar) het midden van het rondje
     let best = null;
-    for (let it = 0; it < 3; it++){
+    for (let it = 0; it < 2; it++){
       try {
         const d = await brouter([A, offset(A, h, out), offset(B, h, out), B], state.surface, state.elev, true);
         if (state.extRun !== runId) return;
@@ -839,12 +842,12 @@ async function extendRoute(extraKm){
         if (!base.manual) coords = trimLoops(coords);
         const rt = finishRoute({coords, segU: coords.slice(1).map(() => false)}, null), extra = rt.length - total;
         if (!best || Math.abs(extra - X) < Math.abs(best.extra - X)) best = Object.assign(rt, {extra});
-        if (Math.abs(extra - X) <= 0.15*X) break;
-        h *= Math.max(0.4, Math.min(2.5, X / Math.max(extra, 150)));
+        if (Math.abs(extra - X) <= 0.15*X || extra < 300) break;  // raak, of doodlopend (dan heeft bijsturen geen zin)
+        h *= Math.max(0.4, Math.min(2.5, X / extra));
       } catch(e){ break; }
     }
-    if (best && best.extra >= 0.6*X && best.extra <= 1.5*X){
-      Object.assign(best, {co: base.co || costing(state.surface, state.elev), surfKnown: false, extOf: base, manual: base.manual,
+    if (best && best.extra >= 0.6*X && best.extra <= 1.5*X && !variants.some(v => Math.abs(v.s - s) < 1 && Math.abs(v.extra - best.extra) < 200)){
+      Object.assign(best, {s, co: base.co || costing(state.surface, state.elev), surfKnown: false, extOf: base, manual: base.manual,
         title: `+${(best.extra/1000).toFixed(1).replace('.', ',')} km · omweg rond km ${Math.max(1, Math.round(s/1000))}`});
       variants.push(best);
       if (variants.length === 1) showRoute(best, true);
