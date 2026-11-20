@@ -74,7 +74,7 @@
 <div id="app">
   <aside id="panel">
     <h1>rondjerennen<span>.nl</span></h1>
-    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v17</span></div>
+    <div class="sub">Zeg wat je wilt lopen, krijg een rondje op maat. <span style="opacity:.5">v18</span></div>
 
     <div class="tabs">
       <button data-tab="gen" class="on">Genereren</button>
@@ -157,10 +157,21 @@
       <div class="legend"><span>Verhard</span><span class="u">Onverhard</span></div>
       <svg class="prof" id="prof" viewBox="0 0 300 90" preserveAspectRatio="none"></svg>
       <div class="actions">
-        <button class="btn" id="gpxBtn">⬇ GPX (voor Strava)</button>
+        <button class="btn" id="gpxBtn">⬇ GPX</button>
+        <button class="btn ghost" id="shareBtn">↗ Delen</button>
         <button class="btn ghost" id="saveBtn">☆ Opslaan</button>
       </div>
-      <div class="hint">Importeer de GPX in Strava via <i>Routes → Importeren</i> of zet hem op je horloge.</div>
+      <div class="hint" id="shareOut"></div>
+      <div class="hint">GPX: importeer in Strava via <i>Routes → Importeren</i>, of open hem op je telefoon in je horloge-app.</div>
+      <label class="h">Route verlengen</label>
+      <div class="row">
+        <button class="btn ghost" data-ext="2" style="flex:1">+2 km</button>
+        <button class="btn ghost" data-ext="5" style="flex:1">+5 km</button>
+        <input type="number" id="extKm" min="0.5" max="20" step="0.5" placeholder="km" style="width:80px">
+        <button class="btn ghost" id="extGo">+</button>
+      </div>
+      <div class="status" id="extStatus"></div>
+      <div class="cards" id="extCards"></div>
     </div>
   </aside>
   <div id="map"></div>
@@ -596,6 +607,8 @@ function selectRoute(i){
 
 /* ---------- route tonen ---------- */
 function showRoute(rt, fit){
+  if (!rt || (rt !== state.extBase && rt.extOf !== state.extBase)){ state.extBase = null; $('extCards').innerHTML = ''; $('extStatus').textContent = ''; }
+  if (rt !== state.route) $('shareOut').innerHTML = '';
   state.route = rt; routeLayer.clearLayers();
   if (!rt || rt.coords.length < 2){ $('routeInfo').style.display = 'none'; return; }
   // casing + gekleurde segmenten
@@ -689,7 +702,7 @@ async function routeManual(points, surface, elev){
     coords.push(...(coords.length ? rt.coords.slice(1) : rt.coords));
   }
   const out = finishRoute({coords, segU: coords.slice(1).map(() => false)}, null);
-  out.co = costing(surface, elev); out.surfKnown = false;
+  out.co = costing(surface, elev); out.surfKnown = false; out.manual = true;
   return out;
 }
 
@@ -710,11 +723,143 @@ $('gpxBtn').onclick = () => {
   const rt = state.route; if (!rt) return;
   const name = routeName(rt);
   const blob = new Blob([toGPX(rt, name)], {type:'application/gpx+xml'});
+  const fname = name.replace(/[^\w,-]+/g, '_') + '.gpx';
+  // op de telefoon: deelmenu openen, zodat de GPX direct naar een horloge-app of Bestanden kan
+  if (matchMedia('(pointer:coarse)').matches && navigator.canShare){
+    const file = new File([blob], fname, {type:'application/gpx+xml'});
+    if (navigator.canShare({files:[file]})){
+      navigator.share({files:[file], title:name}).catch(() => {});
+      return;
+    }
+  }
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = name.replace(/[^\w,-]+/g, '_') + '.gpx';
+  a.href = URL.createObjectURL(blob); a.download = fname;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 };
+/* ---------- delen via een link (de route zit in de link zelf, geen account nodig) ---------- */
+const ALPH = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+function simplify(coords, tol){                                  // Douglas-Peucker, tolerantie in meters
+  const keep = new Uint8Array(coords.length); keep[0] = keep[coords.length-1] = 1;
+  const stack = [[0, coords.length-1]], kx = 111320 * Math.cos(coords[0][0]*Math.PI/180), ky = 111320;
+  while (stack.length){
+    const [a, b] = stack.pop(); let dm = 0, im = -1;
+    const ax = coords[a][1]*kx, ay = coords[a][0]*ky, bx = coords[b][1]*kx, by = coords[b][0]*ky, dx = bx-ax, dy = by-ay, l2 = dx*dx + dy*dy;
+    for (let i = a+1; i < b; i++){
+      const px = coords[i][1]*kx, py = coords[i][0]*ky;
+      const t = l2 ? Math.max(0, Math.min(1, ((px-ax)*dx + (py-ay)*dy) / l2)) : 0;
+      const d = Math.hypot(px - ax - t*dx, py - ay - t*dy);
+      if (d > dm){ dm = d; im = i; }
+    }
+    if (dm > tol){ keep[im] = 1; stack.push([a, im], [im, b]); }
+  }
+  return coords.filter((c, i) => keep[i]);
+}
+function encodeSafe(coords){
+  let out = '', pl = 0, po = 0;
+  const put = v => { v = v < 0 ? ~(v << 1) : v << 1; while (v >= 32){ out += ALPH[(v & 31) | 32]; v >>>= 5; } out += ALPH[v]; };
+  for (const c of coords){ const la = Math.round(c[0]*1e5), lo = Math.round(c[1]*1e5); put(la - pl); put(lo - po); pl = la; po = lo; }
+  return out;
+}
+function decodeSafe(str){
+  const out = []; let i = 0, la = 0, lo = 0;
+  const get = () => { let res = 0, shift = 0, b; do { b = ALPH.indexOf(str[i++]); if (b < 0) throw new Error('ongeldige link'); res |= (b & 31) << shift; shift += 5; } while (b >= 32 && i < str.length); return (res & 1) ? ~(res >> 1) : res >> 1; };
+  while (i < str.length){ la += get(); lo += get(); out.push([la/1e5, lo/1e5, null]); }
+  return out;
+}
+function shareUrl(rt){
+  let data = '';
+  for (const tol of [6, 12, 25]){ data = encodeSafe(simplify(rt.coords, tol)); if (data.length < 3500) break; }
+  return location.origin + location.pathname + '#r-' + data;
+}
+$('shareBtn').onclick = async () => {
+  const rt = state.route; if (!rt) return;
+  const url = shareUrl(rt), text = `Rondje van ${km(rt.length)} op rondjerennen.nl`;
+  if (matchMedia('(pointer:coarse)').matches && navigator.share){
+    try { await navigator.share({title:'rondjerennen.nl', text, url}); return; } catch(e){ if (e.name === 'AbortError') return; }
+  }
+  let copied = false;
+  try { await navigator.clipboard.writeText(url); copied = true; } catch(e){}
+  $('shareOut').innerHTML = `${copied ? 'Link gekopieerd. ' : ''}<a href="https://wa.me/?text=${encodeURIComponent(text + ' ' + url)}" target="_blank" rel="noopener">Stuur via WhatsApp</a>`
+    + (copied ? '' : `<input type="text" readonly value="${url}" style="margin-top:6px" onclick="this.select()">`);
+};
+async function loadShared(){
+  if (!location.hash.startsWith('#r-')) return;
+  let coords;
+  try { coords = densify(decodeSafe(location.hash.slice(3)), 30); } catch(e){ return setStatus('Deze gedeelde link is niet compleet of ongeldig.', true); }
+  if (coords.length < 2) return;
+  const rt = finishRoute({coords, segU: coords.slice(1).map(() => false)}, null);
+  rt.co = costing('any', 'yes'); rt.surfKnown = false; rt.manual = true;
+  setStart(coords[0]); showRoute(rt, true); setStatus('Gedeelde route geopend. Sla hem op of download de GPX.');
+  try {                                                          // hoogte en ondergrond erbij halen
+    const j = await vpost('/height', {shape: coords.map(c => ({lat: c[0], lon: c[1]})), range: false});
+    if (j.height && j.height.length === coords.length){
+      coords.forEach((c, i) => c[2] = j.height[i]);
+      const f = finishRoute({coords, segU: rt.segU}, null); rt.ascend = f.ascend; rt.hasElev = true;
+    }
+  } catch(e){ console.warn('Hoogte onbekend:', e.message); }
+  await addSurface(rt);
+  if (state.route === rt) showRoute(rt, false);
+}
+
+/* ---------- route verlengen: een stuk vervangen door een omweg ---------- */
+function indexAt(rt, d){ let i = 0; while (i < rt.cum.length - 1 && rt.cum[i] < d) i++; return i; }
+async function extendRoute(extraKm){
+  const base = state.route; if (!base || !(extraKm > 0)) return;
+  const X = extraKm*1000, total = base.length, st = $('extStatus');
+  if (total < 1500) return void (st.textContent = 'Deze route is te kort om te verlengen.');
+  const runId = state.extRun = (state.extRun || 0) + 1;
+  state.extBase = base; $('extCards').innerHTML = '';
+  const cLat = base.coords.reduce((a, c) => a + c[0], 0) / base.coords.length, cLon = base.coords.reduce((a, c) => a + c[1], 0) / base.coords.length;
+  const variants = [];
+  const render = () => {
+    $('extCards').innerHTML = [base, ...variants].map((r, i) => `
+      <div class="card ${r === state.route ? 'on' : ''}" data-i="${i}">
+        <div><div class="t">${i ? r.title : 'Oorspronkelijke route'}</div>
+        <div class="m">${km(r.length)} · ↑ ${Math.round(r.ascend)} m</div></div><div>›</div></div>`).join('');
+    $('extCards').querySelectorAll('.card').forEach(c => c.onclick = async () => {
+      const r = [base, ...variants][+c.dataset.i]; showRoute(r, true); render();
+      await addSurface(r); if (state.route === r) showRoute(r, false);
+    });
+  };
+  for (const f of [0.5, 0.25, 0.75]){
+    st.textContent = `Omweg zoeken… (${variants.length} gevonden)`;
+    let h = X / 2.6;                                             // hoe ver de omweg van de route af gaat
+    const w = Math.min(Math.max(250, h/2), total*0.12), s = f*total;
+    const iA = indexAt(base, s - w), iB = indexAt(base, s + w);
+    if (iA < 1 || iB >= base.coords.length - 1 || iB <= iA) continue;
+    const A = base.coords[iA], B = base.coords[iB], mid = base.coords[indexAt(base, s)];
+    const out = bearing([cLat, cLon], mid);                      // naar buiten, weg van het midden van het rondje
+    let best = null;
+    for (let it = 0; it < 3; it++){
+      try {
+        const d = await brouter([A, offset(A, h, out), offset(B, h, out), B], state.surface, state.elev, true);
+        if (state.extRun !== runId) return;
+        let coords = base.coords.slice(0, iA).concat(d.coords, base.coords.slice(iB + 1));
+        if (!base.manual) coords = trimLoops(coords);
+        const rt = finishRoute({coords, segU: coords.slice(1).map(() => false)}, null), extra = rt.length - total;
+        if (!best || Math.abs(extra - X) < Math.abs(best.extra - X)) best = Object.assign(rt, {extra});
+        if (Math.abs(extra - X) <= 0.15*X) break;
+        h *= Math.max(0.4, Math.min(2.5, X / Math.max(extra, 150)));
+      } catch(e){ break; }
+    }
+    if (best && best.extra >= 0.6*X && best.extra <= 1.5*X){
+      Object.assign(best, {co: base.co || costing(state.surface, state.elev), surfKnown: false, extOf: base, manual: base.manual,
+        title: `+${(best.extra/1000).toFixed(1).replace('.', ',')} km · omweg rond km ${Math.max(1, Math.round(s/1000))}`});
+      variants.push(best);
+      if (variants.length === 1) showRoute(best, true);
+      render();
+    }
+  }
+  if (state.extRun !== runId) return;
+  st.textContent = variants.length ? `${variants.length} ${variants.length === 1 ? 'variant' : 'varianten'}. Kies waar je de extra kilometers loopt.`
+                                   : 'Geen goede omweg gevonden op deze route. Probeer een ander aantal kilometers.';
+  const cur = state.route;
+  if (cur && cur.extOf === base){ await addSurface(cur); if (state.route === cur) showRoute(cur, false); }
+}
+document.querySelectorAll('[data-ext]').forEach(b => b.onclick = () => extendRoute(+b.dataset.ext));
+$('extGo').onclick = () => extendRoute(+$('extKm').value.replace(',', '.'));
+
 const KEY = 'rondje.routes';
 function loadSaved(){ try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch(e){ return []; } }
 function storeSaved(list){ try { localStorage.setItem(KEY, JSON.stringify(list)); return true; } catch(e){ return false; } }
@@ -722,7 +867,8 @@ $('saveBtn').onclick = () => {
   const rt = state.route; if (!rt) return;
   const list = loadSaved();
   list.unshift({id: Date.now(), name: routeName(rt), date: new Date().toLocaleDateString('nl-NL'),
-    rt: {...rt, coords: rt.coords.map(c => [+c[0].toFixed(6), +c[1].toFixed(6), c[2] == null ? null : Math.round(c[2]*10)/10])}});
+    rt: {cum: rt.cum, segU: rt.segU, length: rt.length, ascend: rt.ascend, unpavedFrac: rt.unpavedFrac, hasElev: rt.hasElev, surfKnown: rt.surfKnown, co: rt.co,
+         coords: rt.coords.map(c => [+c[0].toFixed(6), +c[1].toFixed(6), c[2] == null ? null : Math.round(c[2]*10)/10])}});
   $('saveBtn').textContent = storeSaved(list) ? '★ Opgeslagen' : 'Opslaan mislukt';
   setTimeout(() => $('saveBtn').textContent = '☆ Opslaan', 1800);
 };
@@ -741,6 +887,7 @@ function renderSaved(){
     showRoute(loadSaved().find(r => r.id === id).rt, true);
   });
 }
+loadShared();
 </script>
 </body>
 </html>
